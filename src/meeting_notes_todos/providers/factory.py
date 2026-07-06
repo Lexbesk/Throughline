@@ -39,25 +39,32 @@ def resolve_provider_name(llm_config: LLMConfig) -> str:
     raise ValueError(f"Unknown provider: {llm_config.provider!r}")
 
 
-def build_provider(llm_config: LLMConfig) -> LLMProvider:
-    """Return the provider implementation for this config (see module docstring)."""
+def build_provider(llm_config: LLMConfig, api_key: str | None = None) -> LLMProvider:
+    """Return the provider implementation for this config (see module docstring).
+
+    ``api_key`` overrides the environment key when supplied — that is how a
+    hosted request runs on the *requesting user's* stored key (v4 M18). When it
+    is None each provider falls back to its env var (local single-user mode).
+    """
     name = resolve_provider_name(llm_config)
     if name == "anthropic":
         return AnthropicProvider(
             model=llm_config.model,
             max_tokens=llm_config.max_tokens,
             temperature=llm_config.temperature,
+            api_key=api_key,
         )
     if name == "openai":
         return OpenAIProvider(
             model=llm_config.model,
             max_tokens=llm_config.max_tokens,
             temperature=llm_config.temperature,
+            api_key=api_key,
         )
     return LocalProvider(
         model=llm_config.model,
         base_url=llm_config.base_url or _OLLAMA_BASE_URL,
-        api_key=os.environ.get("LOCAL_API_KEY", "not-needed"),
+        api_key=api_key or os.environ.get("LOCAL_API_KEY", "not-needed"),
         max_tokens=llm_config.max_tokens,
         temperature=llm_config.temperature,
     )

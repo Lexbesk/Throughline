@@ -35,6 +35,7 @@ from ..auth import (
 from ..backends import build_backends
 from ..chat import ChatOp, apply_chat_ops, run_chat_turn
 from ..config import Config, LLMConfig, load_config
+from ..keys import KEY_PROVIDERS, ApiKeyStore, get_cipher
 from ..models import ActionItem, Priority, Status
 from ..pipeline.extract import ExtractionError, extract_action_items
 from ..pipeline.reconcile import reconcile
@@ -122,13 +123,6 @@ def effective_llm(config: Config, tier: str | None) -> "LLMConfig":
     return config.llm.model_copy(update={"model": resolved})
 
 
-def get_provider(
-    config: Config = Depends(get_config),
-    user: User | None = Depends(get_current_user),
-) -> LLMProvider:
-    return build_provider(effective_llm(config, _tier_for(user)))
-
-
 def get_store(
     config: Config = Depends(get_config),
     user: User | None = Depends(get_current_user),
@@ -150,6 +144,40 @@ def get_profile_backend(store: Store = Depends(get_store)) -> ProfileBackend:
     if path is None:
         raise HTTPException(status_code=500, detail="store has no profile backend")
     return FileProfile(path)
+
+
+def _key_store(store: Store) -> ApiKeyStore:
+    """Per-user key store for the session user (postgres mode). Surfaces a clean
+    500 when the master encryption key isn't configured, rather than a traceback."""
+    try:
+        cipher = get_cipher()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return ApiKeyStore(store.pool, store.user_id, cipher)
+
+
+def get_provider(
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+    store: Store = Depends(get_store),
+) -> LLMProvider:
+    llm = effective_llm(config, _tier_for(user))
+    if not _auth_enabled(config):
+        return build_provider(llm)  # local single-user mode: keys from the env
+
+    # hosted mode: run on the requesting user's stored key for the selected
+    # provider — never the env, never another user's key (v4 §7)
+    provider_name = resolve_provider_name(llm)
+    if provider_name not in KEY_PROVIDERS:  # e.g. a local endpoint
+        return build_provider(llm)
+    api_key = _key_store(store).get_key(provider_name)
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=f"No {provider_name} API key set for your account. "
+            'Add one under "Keys" to use this model.',
+        )
+    return build_provider(llm, api_key=api_key)
 
 
 # --- request models ---------------------------------------------------------
@@ -220,6 +248,10 @@ class LoginRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str
 
 
 # --- routes -----------------------------------------------------------------
@@ -445,6 +477,43 @@ def api_change_password(
         httponly=True, samesite="lax", secure=_secure_cookies(), path="/",
     )
     return {"ok": True}
+
+
+# --- per-user API keys (v4 M18; encrypted at rest, never returned in the clear) ---
+
+
+def get_key_store(
+    config: Config = Depends(get_config),
+    store: Store = Depends(get_store),
+) -> ApiKeyStore:
+    """Require hosted mode; the store dependency already enforced the session."""
+    if not _auth_enabled(config):
+        raise HTTPException(status_code=400, detail="API keys are not used in local mode")
+    return _key_store(store)
+
+
+@app.get("/api/keys")
+def api_list_keys(keys: ApiKeyStore = Depends(get_key_store)) -> dict:
+    # masked only — provider, last 4 chars, timestamp; never the key itself
+    return {"providers": list(KEY_PROVIDERS), "keys": keys.list_keys()}
+
+
+@app.put("/api/keys/{provider}")
+def api_set_key(
+    provider: str, req: ApiKeyRequest, keys: ApiKeyStore = Depends(get_key_store)
+) -> dict:
+    try:
+        keys.set_key(provider, req.api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    # respond with the masked view only — the plaintext is never echoed back
+    entry = next((k for k in keys.list_keys() if k["provider"] == provider), None)
+    return {"provider": provider, "last4": entry["last4"] if entry else None}
+
+
+@app.delete("/api/keys/{provider}")
+def api_delete_key(provider: str, keys: ApiKeyStore = Depends(get_key_store)) -> dict:
+    return {"removed": keys.delete_key(provider)}
 
 
 @app.get("/api/model")

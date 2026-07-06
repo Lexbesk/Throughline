@@ -27,3 +27,6 @@ data/usage.jsonl
 # Anything named *.local.md is personal scratch material kept out of the repo.
 *.local.md
 samples/test_profile_0.md
+
+# Local postgres-mode run directory (config copy with backend = "postgres")
+local-run/

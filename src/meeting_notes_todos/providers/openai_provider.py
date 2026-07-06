@@ -36,14 +36,16 @@ class OpenAIProvider(LocalProvider):
         *,
         max_tokens: int = 1024,
         temperature: float | None = None,
+        api_key: str | None = None,
         client: Any = None,
     ) -> None:
         if client is None:  # lazy import, as in LocalProvider
             from openai import OpenAI
 
-            # placeholder avoids a constructor-time error when the key is absent;
-            # a request without a real key fails with OpenAI's own 401 message
-            client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or "not-set")
+            # v4 M18: prefer the passed (per-user) key; else the env key; else a
+            # placeholder so construction never errors — a keyless request then
+            # fails with OpenAI's own 401 rather than at build time.
+            client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY") or "not-set")
         super().__init__(
             model=model,
             base_url="https://api.openai.com/v1",

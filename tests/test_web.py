@@ -289,7 +289,8 @@ def test_model_switch_endpoint_drives_the_next_provider():
         assert client.get("/api/model").json()["tier"] == "Sonnet 5"
 
         # the selection drives provider construction, i.e. the next turn app-wide
-        provider = web_app.get_provider(Config(), user=None)  # None = local mode
+        # (local/markdown mode ⇒ env keys, store untouched)
+        provider = web_app.get_provider(Config(), user=None, store=None)
         assert isinstance(provider, AnthropicProvider)
         assert provider._model == "claude-sonnet-5"
 

@@ -241,6 +241,19 @@ def cmd_user(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keygen(_args: argparse.Namespace) -> int:
+    """Print a fresh master encryption key for per-user API keys (v4 M18)."""
+    from .keys import MASTER_KEY_ENV, generate_master_key
+
+    print(generate_master_key())
+    print(
+        f"# Set this as {MASTER_KEY_ENV} in the environment (a .env line in dev, a "
+        "platform secret in production). Keep it stable — it decrypts stored keys.",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def cmd_usage(_args: argparse.Namespace) -> int:
     """Show token-usage totals from the per-run log (M5)."""
     config = load_config()
@@ -357,6 +370,8 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("--password", help="omit to be prompted securely (recommended)")
     user_sub.add_parser("list", help="list accounts")
 
+    sub.add_parser("keygen", help="print a master encryption key for per-user API keys (v4)")
+
     return parser
 
 
@@ -368,6 +383,7 @@ _HANDLERS = {
     "serve": cmd_serve,
     "usage": cmd_usage,
     "user": cmd_user,
+    "keygen": cmd_keygen,
 }
 
 

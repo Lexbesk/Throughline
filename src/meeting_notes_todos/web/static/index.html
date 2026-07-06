@@ -121,13 +121,23 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
                border-radius:6px; background:var(--panel); color:var(--ink); }
   #loginOverlay { position:fixed; inset:0; background:var(--bg); display:flex;
                   align-items:center; justify-content:center; z-index:10; }
-  #loginOverlay.hidden { display:none; } /* the id selector would outrank .hidden */
+  #loginOverlay.hidden, #keysOverlay.hidden { display:none; } /* id selector outranks .hidden */
   .logincard { background:var(--panel); border:1px solid var(--line); border-radius:10px;
                padding:28px 30px; width:340px; }
   .logincard h2 { text-transform:none; letter-spacing:0; font-size:16px; color:var(--ink);
                   margin:0 0 4px; }
   .logincard input { width:100%; margin:6px 0; padding:8px 10px; border:1px solid var(--line);
                      border-radius:6px; background:var(--panel); color:var(--ink); font:inherit; }
+  #keysOverlay { position:fixed; inset:0; background:rgba(0,0,0,.35); display:flex;
+                 align-items:center; justify-content:center; z-index:11; }
+  .keyscard { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+              padding:24px 26px; width:460px; max-width:92vw; }
+  .keyscard h2 { text-transform:none; letter-spacing:0; font-size:16px; color:var(--ink); margin:0 0 4px; }
+  .keyrow { border-top:1px solid var(--line); padding:12px 0; }
+  .keyrow:first-of-type { border-top:none; }
+  .keyrow .prov { font-weight:600; }
+  .keyrow input { width:100%; margin:6px 0; padding:8px 10px; border:1px solid var(--line);
+                  border-radius:6px; background:var(--panel); color:var(--ink); font:inherit; }
   .hidden { display:none; }
 </style>
 <!-- vendored locally (see static/vendor/README.md) so the app works offline;
@@ -144,6 +154,7 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
 as a card you approve. Manage your tasks and profile beside it.</p>
     </div>
     <span class="status" id="whoami"></span>
+    <button id="keysBtn" class="hidden" onclick="openKeys()">Keys</button>
     <button id="logoutBtn" class="hidden" onclick="doLogout()">Log out</button>
     <label class="status" style="display:flex; align-items:center; gap:6px">model
       <select id="modelTier" onchange="setModelTier(this.value)" title="model switch"></select>
@@ -164,6 +175,19 @@ by the admin; there is no signup.</div>
       <button class="primary" id="loginBtn" onclick="doLogin()">Sign in</button>
       <span class="status" id="loginStatus"></span>
     </div>
+  </div>
+</div>
+<div id="keysOverlay" class="hidden">
+  <div class="keyscard">
+    <div class="controls" style="margin:0 0 6px">
+      <h2 style="margin:0">API keys</h2>
+      <span class="spacer"></span>
+      <button onclick="closeKeys()">Close</button>
+    </div>
+    <div class="status" style="margin-bottom:6px">Your keys run only your requests. Stored
+encrypted; shown masked. Each user provides their own — get one from the provider's console.</div>
+    <div id="keysList"></div>
+    <div class="status" id="keysStatus" style="margin-top:8px"></div>
   </div>
 </div>
 <main>
@@ -251,9 +275,64 @@ async function initAuth() {
     if (me.username) {
       document.getElementById("whoami").textContent = me.username;
       document.getElementById("logoutBtn").classList.remove("hidden");
+      document.getElementById("keysBtn").classList.remove("hidden");
     }
   } catch (e) { /* fall through: local mode */ }
   loadAll();
+}
+
+// --- per-user API keys (v4 M18): masked management; keys never leave the server ---
+
+async function openKeys() {
+  document.getElementById("keysOverlay").classList.remove("hidden");
+  document.getElementById("keysStatus").textContent = "";
+  await renderKeys();
+}
+function closeKeys() { document.getElementById("keysOverlay").classList.add("hidden"); }
+
+async function renderKeys() {
+  const data = await (await fetch("/api/keys")).json();
+  const byProvider = Object.fromEntries((data.keys || []).map(k => [k.provider, k]));
+  document.getElementById("keysList").innerHTML = data.providers.map(p => {
+    const set = byProvider[p];
+    const state = set
+      ? `<span class="status">set · ····${esc(set.last4)} · updated ${esc((set.updated_at||"").slice(0,10))}</span>`
+      : `<span class="status">not set</span>`;
+    return `<div class="keyrow">
+      <div class="controls" style="margin:0"><span class="prov">${esc(p)}</span>
+        <span class="spacer"></span>${state}
+        ${set ? `<button class="link" onclick="removeKey('${esc(p)}')">remove</button>` : ""}</div>
+      <input type="password" id="key-${esc(p)}" placeholder="paste ${esc(p)} API key to ${set ? "replace" : "add"}"/>
+      <button onclick="saveKey('${esc(p)}')">${set ? "Replace" : "Save"} key</button>
+    </div>`;
+  }).join("");
+}
+
+async function saveKey(provider) {
+  const input = document.getElementById(`key-${provider}`);
+  const status = document.getElementById("keysStatus");
+  const val = input.value.trim();
+  if (!val) { status.textContent = "Paste a key first."; return; }
+  try {
+    const res = await fetch(`/api/keys/${encodeURIComponent(provider)}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ api_key: val }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    input.value = ""; // never keep the plaintext around in the DOM
+    status.textContent = `${provider} key saved.`;
+    await renderKeys();
+  } catch (e) { status.textContent = "Error: " + e.message; }
+}
+
+async function removeKey(provider) {
+  const status = document.getElementById("keysStatus");
+  try {
+    const res = await fetch(`/api/keys/${encodeURIComponent(provider)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    status.textContent = `${provider} key removed.`;
+    await renderKeys();
+  } catch (e) { status.textContent = "Error: " + e.message; }
 }
 
 async function doLogin() {
@@ -272,6 +351,7 @@ async function doLogin() {
     document.getElementById("loginOverlay").classList.add("hidden");
     document.getElementById("whoami").textContent = data.username;
     document.getElementById("logoutBtn").classList.remove("hidden");
+    document.getElementById("keysBtn").classList.remove("hidden");
     status.textContent = "";
     loadAll();
   } catch (e) {
@@ -569,6 +649,7 @@ async function sendChat() {
   } catch (e) {
     appendMsg("note", "Error: " + e.message);
     status.textContent = "";
+    if (/API key/i.test(e.message)) openKeys(); // graceful no-key nudge (v4 §7)
   } finally { btn.disabled = false; input.focus(); }
 }
 

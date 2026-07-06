@@ -68,6 +68,19 @@ _SCHEMA_STATEMENTS = (
     """
     CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id)
     """,
+    # v4 M18: per-user, per-provider API keys. Only the ciphertext is stored;
+    # last4 is kept plaintext purely for masked display (never decrypt to list).
+    """
+    CREATE TABLE IF NOT EXISTS user_api_keys (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        encrypted_key TEXT NOT NULL,
+        last4 TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, provider)
+    )
+    """,
 )
 
 _POOLS: dict[str, ConnectionPool] = {}

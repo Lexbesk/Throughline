@@ -28,8 +28,10 @@ def _usage_of(resp: Any) -> Usage:
 class AnthropicProvider(LLMProvider):
     """Calls the Claude API via the official Anthropic SDK.
 
-    The SDK reads ``ANTHROPIC_API_KEY`` from the environment, so no key is passed
-    here. A pre-built ``client`` can be injected (used by tests).
+    ``api_key`` is passed explicitly when supplied (v4 M18: the requesting
+    user's key); when it is None the SDK reads ``ANTHROPIC_API_KEY`` from the
+    environment (local single-user mode). A pre-built ``client`` can be injected
+    (used by tests).
     """
 
     def __init__(
@@ -38,12 +40,15 @@ class AnthropicProvider(LLMProvider):
         *,
         max_tokens: int = 1024,
         temperature: float | None = None,
+        api_key: str | None = None,
         client: anthropic.Anthropic | None = None,
     ) -> None:
         self._model = model
         self._max_tokens = max_tokens
         self._temperature = temperature
-        self._client = client or anthropic.Anthropic()
+        if client is None:
+            client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        self._client = client
 
     def complete(
         self,
