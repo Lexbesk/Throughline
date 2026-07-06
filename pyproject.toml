@@ -16,6 +16,8 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "openai>=1.0",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
 ]
 
 [project.optional-dependencies]

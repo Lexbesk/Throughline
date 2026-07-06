@@ -142,6 +142,17 @@ def test_freeform_lines_are_ignored(tmp_path):
     assert [it.id for it in store.load()] == ["a"]
 
 
+def test_build_backends_markdown_branch(tmp_path):
+    from meeting_notes_todos.backends import build_backends
+    from meeting_notes_todos.profile import FileProfile
+
+    store, profile = build_backends(StoreConfig(path=tmp_path / "todos.md"))
+    assert isinstance(store, MarkdownStore)
+    assert isinstance(profile, FileProfile)
+    profile.save("## Long-term goals\n\nHello.")
+    assert (tmp_path / "profile.md").exists()  # paired with the store's location
+
+
 def test_build_store_factory(tmp_path):
     assert isinstance(build_store(StoreConfig(path=tmp_path / "t.md")), MarkdownStore)
     with pytest.raises(NotImplementedError):

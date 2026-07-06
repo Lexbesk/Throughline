@@ -1,0 +1,29 @@
+# Local development Postgres (v4 M16). Free, offline, no Fly account needed.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# The app connects via DATABASE_URL (see .env.example); the default dev URL is
+#   postgresql://throughline:throughline@localhost:5432/throughline
+# Production uses a managed Postgres chosen at M19 — same URL mechanism.
+# Dev-only credentials; real secrets never live in this repo.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: throughline-postgres
+    environment:
+      POSTGRES_USER: throughline
+      POSTGRES_PASSWORD: throughline
+      POSTGRES_DB: throughline
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - throughline-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U throughline -d throughline"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  throughline-pgdata:

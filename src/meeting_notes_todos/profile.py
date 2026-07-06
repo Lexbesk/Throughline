@@ -13,6 +13,7 @@ a plain, hand-editable markdown document.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 NO_PROFILE = "(no profile provided)"
@@ -101,10 +102,9 @@ def section_body(text: str | None, section: str) -> str | None:
     return None
 
 
-def update_section(store_path: str | Path, section: str, new_text: str) -> Path:
-    """Replace one named section's body (creating the section — and, for a brand-new
-    profile, the seeded structure — if needed). All other content is preserved."""
-    text = load_profile(store_path) or default_profile()
+def replace_section(text: str, section: str, new_text: str) -> str:
+    """Pure text transform: replace one named section's body (creating the section
+    if needed). All other content is preserved."""
     preamble, sections = parse_sections(text)
     section = section.strip()
     out: list[tuple[str, str]] = []
@@ -117,4 +117,73 @@ def update_section(store_path: str | Path, section: str, new_text: str) -> Path:
             out.append((name, body))
     if not replaced:
         out.append((section, new_text.strip()))
-    return save_profile(store_path, render_sections(preamble, out))
+    return render_sections(preamble, out)
+
+
+def update_section(store_path: str | Path, section: str, new_text: str) -> Path:
+    """File-backed section update (kept for the CLI and as the FileProfile core)."""
+    text = load_profile(store_path) or default_profile()
+    return save_profile(store_path, replace_section(text, section, new_text))
+
+
+# --- backends (v4 M16): the same profile, file-backed or per-user in Postgres ---
+
+
+class ProfileBackend(ABC):
+    """Thin storage interface for the profile document. All the v3 section
+    machinery (parse/render/replace) operates on the text, so backends only
+    load and save whole documents — the same swap the item store made."""
+
+    @abstractmethod
+    def load(self) -> str | None:
+        """The profile text, or None if none exists yet."""
+
+    @abstractmethod
+    def save(self, text: str) -> None:
+        """Write the full profile document."""
+
+    def update_section(self, section: str, new_text: str) -> None:
+        """Replace one named section (seeding the template on a fresh profile)."""
+        text = self.load() or default_profile()
+        self.save(replace_section(text, section, new_text))
+
+
+class FileProfile(ProfileBackend):
+    """The v1–v3 behavior: ``profile.md`` beside the todo store."""
+
+    def __init__(self, store_path: str | Path) -> None:
+        self._store_path = store_path
+
+    def load(self) -> str | None:
+        return load_profile(self._store_path)
+
+    def save(self, text: str) -> None:
+        save_profile(self._store_path, text)
+
+
+class PostgresProfile(ProfileBackend):
+    """Per-user profile row (v4 M16). Scoped by ``user_id`` on every query —
+    the same hard-isolation rule as the item store."""
+
+    def __init__(self, pool, user_id: str) -> None:
+        self.pool = pool
+        self.user_id = user_id
+
+    def load(self) -> str | None:
+        with self.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT content FROM profiles WHERE user_id = %s", (self.user_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        text = row[0].strip()
+        return text or None
+
+    def save(self, text: str) -> None:
+        with self.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO profiles (user_id, content) VALUES (%s, %s)"
+                " ON CONFLICT (user_id) DO UPDATE"
+                " SET content = EXCLUDED.content, updated_at = now()",
+                (self.user_id, text.strip()),
+            )

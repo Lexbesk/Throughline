@@ -20,16 +20,24 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..backends import build_backends
 from ..chat import ChatOp, apply_chat_ops, run_chat_turn
 from ..config import Config, LLMConfig, load_config
 from ..models import ActionItem, Priority, Status
 from ..pipeline.extract import ExtractionError, extract_action_items
 from ..pipeline.reconcile import reconcile
-from ..profile import SECTION_CAP, default_profile, load_profile, save_profile, update_section
+from ..profile import (
+    SECTION_CAP,
+    FileProfile,
+    PostgresProfile,
+    ProfileBackend,
+    default_profile,
+)
 from ..providers import build_provider, resolve_provider_name
 from ..providers.base import LLMProvider
 from ..review import Proposal, ReviewedItem, build_proposals, commit_reviewed
-from ..store import Store, build_store
+from ..store import Store
+from ..store.postgres_store import PostgresStore
 from ..usage import record_run
 
 try:  # so `uvicorn meeting_notes_todos.web.app:app` also picks up .env
@@ -73,7 +81,19 @@ def get_provider(config: Config = Depends(get_config)) -> LLMProvider:
 
 
 def get_store(config: Config = Depends(get_config)) -> Store:
-    return build_store(config.store)
+    return build_backends(config.store)[0]
+
+
+def get_profile_backend(store: Store = Depends(get_store)) -> ProfileBackend:
+    """The profile paired with the store's backend (and, for postgres, the same
+    user). Deriving from the store keeps a test's ``get_store`` override
+    consistent for both."""
+    if isinstance(store, PostgresStore):
+        return PostgresProfile(store.pool, store.user_id)
+    path = getattr(store, "path", None)
+    if path is None:
+        raise HTTPException(status_code=500, detail="store has no profile backend")
+    return FileProfile(path)
 
 
 # --- request models ---------------------------------------------------------
@@ -154,6 +174,7 @@ def api_review(
     req: ReviewRequest,
     provider: LLMProvider = Depends(get_provider),
     store: Store = Depends(get_store),
+    profile: ProfileBackend = Depends(get_profile_backend),
     config: Config = Depends(get_config),
 ) -> dict:
     notes = req.notes.strip()
@@ -170,7 +191,7 @@ def api_review(
             notes=notes,
             meeting_date=meeting_date,
             meeting_id=meeting_id,
-            profile=_load_profile(store),
+            profile=profile.load(),
         )
     except ExtractionError as exc:
         raise HTTPException(status_code=502, detail=f"extraction failed: {exc}")
@@ -214,6 +235,7 @@ def api_chat(
     req: ChatRequest,
     provider: LLMProvider = Depends(get_provider),
     store: Store = Depends(get_store),
+    profile: ProfileBackend = Depends(get_profile_backend),
     config: Config = Depends(get_config),
 ) -> dict:
     messages = [m.model_dump() for m in req.messages]
@@ -227,7 +249,7 @@ def api_chat(
             prompts=config.prompts,
             items=items,
             messages=messages,
-            profile=_load_profile(store),
+            profile=profile.load(),
         )
     except NotImplementedError:
         raise HTTPException(
@@ -245,7 +267,11 @@ def api_chat(
 
 
 @app.post("/api/chat/commit")
-def api_chat_commit(req: ChatCommitRequest, store: Store = Depends(get_store)) -> dict:
+def api_chat_commit(
+    req: ChatCommitRequest,
+    store: Store = Depends(get_store),
+    profile: ProfileBackend = Depends(get_profile_backend),
+) -> dict:
     item_ops = [op for op in req.ops if op.op != "profile"]
     result = apply_chat_ops(store.load(), item_ops)
     store.save(result.final)
@@ -253,20 +279,17 @@ def api_chat_commit(req: ChatCommitRequest, store: Store = Depends(get_store)) -
     skipped = list(result.skipped)
 
     # profile updates bypass the item store: an accepted section body is written
-    # into that one section of profile.md (v3 M11); everything else is preserved
+    # into that one section of the profile (v3 M11); everything else is preserved
     for op in (op for op in req.ops if op.op == "profile"):
         section = (op.section or "").strip()
         new_text = (op.new_text or "").strip()
-        store_path = getattr(store, "path", None)
         if not section or not new_text:
             skipped.append(("profile", "a section name and new text are required"))
         elif len(new_text) > SECTION_CAP:
             skipped.append((f'profile: "{section}"',
                             f"section text over the {SECTION_CAP}-char cap — keep it tight"))
-        elif store_path is None:
-            skipped.append(("profile", "store has no path to keep a profile beside"))
         else:
-            update_section(store_path, section, new_text)
+            profile.update_section(section, new_text)
             applied.append(f'profile: updated "{section}"')
 
     return {
@@ -301,26 +324,19 @@ def api_put_model(req: ModelRequest, config: Config = Depends(get_config)) -> di
 
 
 @app.get("/api/profile")
-def api_get_profile(store: Store = Depends(get_store)) -> dict:
+def api_get_profile(profile: ProfileBackend = Depends(get_profile_backend)) -> dict:
     # an empty/missing profile shows the seeded five-section template (v3 §5.1);
     # nothing is written until the user saves or accepts a section update
-    return {"profile": _load_profile(store) or default_profile()}
+    return {"profile": profile.load() or default_profile()}
 
 
 @app.put("/api/profile")
-def api_put_profile(req: ProfileRequest, store: Store = Depends(get_store)) -> dict:
+def api_put_profile(
+    req: ProfileRequest, profile: ProfileBackend = Depends(get_profile_backend)
+) -> dict:
     """Direct user edit of the profile — no gate needed, it's the user's own text."""
-    store_path = getattr(store, "path", None)
-    if store_path is None:
-        raise HTTPException(status_code=500, detail="store has no path to keep a profile beside")
-    save_profile(store_path, req.profile)
-    return {"profile": _load_profile(store) or default_profile()}
-
-
-def _load_profile(store: Store) -> str | None:
-    """The profile.md beside the store, if present (v2 §4.5, §6)."""
-    path = getattr(store, "path", None)
-    return load_profile(path) if path is not None else None
+    profile.save(req.profile)
+    return {"profile": profile.load() or default_profile()}
 
 
 @app.patch("/api/items/{item_id}")

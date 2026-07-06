@@ -40,8 +40,8 @@ class LLMConfig(BaseModel):
 
 
 class StoreConfig(BaseModel):
-    backend: str = "markdown"
-    path: Path = Path("data/todos.md")
+    backend: str = "markdown"  # markdown (local files) | postgres (v4: DATABASE_URL)
+    path: Path = Path("data/todos.md")  # markdown backend only
 
 
 class PromptsConfig(BaseModel):

@@ -9,15 +9,14 @@ import sys
 from datetime import date
 from uuid import uuid4
 
+from .backends import build_backends
 from .config import Config, load_config
 from .models import ActionItem
 from .pipeline.extract import ExtractionError, extract_action_items
 from .pipeline.merge import MergeResult, apply_decisions
 from .pipeline.reconcile import reconcile
-from .profile import load_profile
 from .prompts import load_prompt
 from .providers import build_provider, resolve_provider_name
-from .store import build_store
 from .usage import record_run, summarize
 
 try:  # optional convenience: load ANTHROPIC_API_KEY from a local .env
@@ -81,6 +80,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
     meeting_id = args.meeting_id or _meeting_id(meeting_date)
 
     provider = build_provider(config.llm)
+    _, profile = build_backends(config.store)
     try:
         run = extract_action_items(
             provider=provider,
@@ -88,7 +88,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             notes=notes,
             meeting_date=meeting_date,
             meeting_id=meeting_id,
-            profile=load_profile(config.store.path),
+            profile=profile.load(),
         )
     except ExtractionError as exc:
         print(f"Extraction failed: {exc}", file=sys.stderr)
@@ -125,7 +125,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     meeting_id = args.meeting_id or _meeting_id(meeting_date)
 
     provider = build_provider(config.llm)
-    store = build_store(config.store)
+    store, profile = build_backends(config.store)
     existing = store.load()
 
     try:
@@ -135,7 +135,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
             notes=notes,
             meeting_date=meeting_date,
             meeting_id=meeting_id,
-            profile=load_profile(config.store.path),
+            profile=profile.load(),
         )
     except ExtractionError as exc:
         print(f"Extraction failed: {exc}", file=sys.stderr)
@@ -153,8 +153,9 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     usage = run.usage + rec.usage
     if args.commit:
         store.save(result.final)
+        where = config.store.path if config.store.backend == "markdown" else "postgres"
         print(
-            f"\ncommitted to {config.store.path}: {len(result.added)} added, "
+            f"\ncommitted to {where}: {len(result.added)} added, "
             f"{len(result.updated)} updated, {len(result.skipped)} skipped"
         )
     else:
@@ -174,10 +175,11 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_list(_args: argparse.Namespace) -> int:
     """Print the current TODO store (M2; read path, no API key needed)."""
     config = load_config()
-    store = build_store(config.store)
+    store, _ = build_backends(config.store)
     items = store.load()
     _print_items(items)
-    print(f"\n{len(items)} item(s) in {config.store.path}")
+    where = config.store.path if config.store.backend == "markdown" else "postgres"
+    print(f"\n{len(items)} item(s) in {where}")
     return 0
 
 
