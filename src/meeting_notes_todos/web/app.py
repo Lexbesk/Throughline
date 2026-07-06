@@ -10,16 +10,28 @@ they are direct user edits, not model proposals, so no advisory gate applies.
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from ..auth import (
+    COOKIE_NAME,
+    SESSION_TTL_DAYS,
+    User,
+    authenticate,
+    create_session,
+    delete_session,
+    delete_user_sessions,
+    session_user,
+    set_password,
+)
 from ..backends import build_backends
 from ..chat import ChatOp, apply_chat_ops, run_chat_turn
 from ..config import Config, LLMConfig, load_config
@@ -58,29 +70,73 @@ app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 # --- dependencies (overridable in tests) ------------------------------------
 
 
-# v3 M14: the global model switch. One tier selection for the whole app, applied
-# to the next turn; None = the config's startup model. In-memory by design — a
-# restart falls back to config, and a durable change is a config edit.
+# v3 M14 / v4 M17: the model switch. In local (markdown) mode there is one
+# global selection; in hosted (postgres) mode the selection is per-user. Both
+# are in-memory by design — a restart falls back to config, and a durable
+# change is a config edit.
 _current_tier: str | None = None
+_tier_by_user: dict[str, str] = {}
 
 
 def get_config() -> Config:
     return load_config()
 
 
-def effective_llm(config: Config) -> "LLMConfig":
-    """The LLM config with the globally selected tier resolved onto it."""
-    resolved = config.llm.model_for_tier(_current_tier)
+def _auth_enabled(config: Config) -> bool:
+    # multi-user backend ⇒ login required; local files ⇒ single-user, no auth
+    return config.store.backend == "postgres"
+
+
+def _secure_cookies() -> bool:
+    # off for localhost dev over http; M19 sets THROUGHLINE_SECURE_COOKIES=1 in prod
+    return os.environ.get("THROUGHLINE_SECURE_COOKIES", "") not in ("", "0", "false")
+
+
+def get_current_user(request: Request, config: Config = Depends(get_config)) -> User | None:
+    """The logged-in user (postgres mode) or None (local single-user mode).
+
+    In postgres mode a missing/invalid session is a 401 — this dependency is
+    what makes every data route require login (v4 §5).
+    """
+    if not _auth_enabled(config):
+        return None
+    from ..db import get_pool
+
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        user = session_user(get_pool(), token)
+        if user is not None:
+            return user
+    raise HTTPException(status_code=401, detail="login required")
+
+
+def _tier_for(user: User | None) -> str | None:
+    return _tier_by_user.get(user.id) if user else _current_tier
+
+
+def effective_llm(config: Config, tier: str | None) -> "LLMConfig":
+    """The LLM config with the selected tier resolved onto it."""
+    resolved = config.llm.model_for_tier(tier)
     if resolved == config.llm.model:
         return config.llm
     return config.llm.model_copy(update={"model": resolved})
 
 
-def get_provider(config: Config = Depends(get_config)) -> LLMProvider:
-    return build_provider(effective_llm(config))
+def get_provider(
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+) -> LLMProvider:
+    return build_provider(effective_llm(config, _tier_for(user)))
 
 
-def get_store(config: Config = Depends(get_config)) -> Store:
+def get_store(
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+) -> Store:
+    if _auth_enabled(config):
+        from ..db import get_pool
+
+        return PostgresStore(get_pool(), user.id)  # scoped to the session user
     return build_backends(config.store)[0]
 
 
@@ -156,6 +212,16 @@ class ModelRequest(BaseModel):
     tier: str
 
 
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 # --- routes -----------------------------------------------------------------
 
 
@@ -176,6 +242,7 @@ def api_review(
     store: Store = Depends(get_store),
     profile: ProfileBackend = Depends(get_profile_backend),
     config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
 ) -> dict:
     notes = req.notes.strip()
     if not notes:
@@ -204,7 +271,7 @@ def api_review(
     )
     proposals = build_proposals(rec.decisions)
     usage = run.usage + rec.usage
-    llm = effective_llm(config)
+    llm = effective_llm(config, _tier_for(user))
     record_run(config.usage.path, command="web-review", provider=resolve_provider_name(llm),
                model=llm.model, usage=usage)
     return {
@@ -237,6 +304,7 @@ def api_chat(
     store: Store = Depends(get_store),
     profile: ProfileBackend = Depends(get_profile_backend),
     config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
 ) -> dict:
     messages = [m.model_dump() for m in req.messages]
     if not messages or messages[-1]["role"] != "user" or not messages[-1]["content"].strip():
@@ -255,7 +323,7 @@ def api_chat(
         raise HTTPException(
             status_code=502, detail="the configured provider does not support chat with tools"
         )
-    llm = effective_llm(config)
+    llm = effective_llm(config, _tier_for(user))
     record_run(config.usage.path, command="web-chat", provider=resolve_provider_name(llm),
                model=llm.model, usage=turn.usage)
     return {
@@ -299,28 +367,120 @@ def api_chat_commit(
     }
 
 
+# --- accounts & sessions (v4 M17; login-only, no signup path exists) ---------
+
+
+@app.get("/api/me")
+def api_me(request: Request, config: Config = Depends(get_config)) -> dict:
+    """Login state for the UI — never a 401, it *reports* rather than gates."""
+    if not _auth_enabled(config):
+        return {"auth_required": False, "username": None}
+    from ..db import get_pool
+
+    token = request.cookies.get(COOKIE_NAME)
+    user = session_user(get_pool(), token) if token else None
+    return {"auth_required": True, "username": user.username if user else None}
+
+
+@app.post("/api/login")
+def api_login(
+    req: LoginRequest, response: Response, config: Config = Depends(get_config)
+) -> dict:
+    if not _auth_enabled(config):
+        raise HTTPException(status_code=400, detail="login is not used in local mode")
+    from ..db import get_pool
+
+    pool = get_pool()
+    user = authenticate(pool, req.username, req.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="invalid username or password")
+    token = create_session(pool, user.id)
+    response.set_cookie(
+        COOKIE_NAME,
+        token,
+        max_age=SESSION_TTL_DAYS * 24 * 3600,
+        httponly=True,
+        samesite="lax",
+        secure=_secure_cookies(),
+        path="/",
+    )
+    return {"username": user.username}
+
+
+@app.post("/api/logout")
+def api_logout(
+    request: Request, response: Response, config: Config = Depends(get_config)
+) -> dict:
+    if _auth_enabled(config):
+        from ..db import get_pool
+
+        token = request.cookies.get(COOKIE_NAME)
+        if token:
+            delete_session(get_pool(), token)  # revoked server-side, not just forgotten
+    response.delete_cookie(COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.post("/api/password")
+def api_change_password(
+    req: PasswordChangeRequest,
+    response: Response,
+    user: User | None = Depends(get_current_user),
+) -> dict:
+    """Change one's own password (e.g. after first login); revokes all sessions."""
+    if user is None:
+        raise HTTPException(status_code=400, detail="no accounts in local mode")
+    if len(req.new_password) < 8:
+        raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
+    from ..db import get_pool
+
+    pool = get_pool()
+    if authenticate(pool, user.username, req.current_password) is None:
+        raise HTTPException(status_code=403, detail="current password is incorrect")
+    set_password(pool, user.username, req.new_password)
+    delete_user_sessions(pool, user.id)  # every old session dies with the old password
+    token = create_session(pool, user.id)  # …but this browser stays logged in
+    response.set_cookie(
+        COOKIE_NAME, token, max_age=SESSION_TTL_DAYS * 24 * 3600,
+        httponly=True, samesite="lax", secure=_secure_cookies(), path="/",
+    )
+    return {"ok": True}
+
+
 @app.get("/api/model")
-def api_get_model(config: Config = Depends(get_config)) -> dict:
-    llm = effective_llm(config)
+def api_get_model(
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+) -> dict:
+    tier = _tier_for(user)
+    llm = effective_llm(config, tier)
     return {
         "tiers": config.llm.tiers,
-        "tier": _current_tier,  # None = the config's startup model
+        "tier": tier,  # None = the config's startup model
         "model": llm.model,
         "provider": resolve_provider_name(llm),  # the vendor the model string routes to
     }
 
 
 @app.put("/api/model")
-def api_put_model(req: ModelRequest, config: Config = Depends(get_config)) -> dict:
-    """Select the global model tier — it drives the next turn, app-wide (v3 §6)."""
+def api_put_model(
+    req: ModelRequest,
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+) -> dict:
+    """Select the model tier for the next turn — per-user when logged in (v4 M17),
+    app-wide in local single-user mode (v3 §6)."""
     global _current_tier
     if req.tier not in config.llm.tiers:
         raise HTTPException(
             status_code=400,
             detail=f"unknown tier {req.tier!r}; configured tiers: {sorted(config.llm.tiers)}",
         )
-    _current_tier = req.tier
-    return api_get_model(config)
+    if user is not None:
+        _tier_by_user[user.id] = req.tier
+    else:
+        _current_tier = req.tier
+    return api_get_model(config, user)
 
 
 @app.get("/api/profile")

@@ -197,6 +197,50 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_user(args: argparse.Namespace) -> int:
+    """Provision and manage accounts (v4 M17) — there is no signup; this is it."""
+    import getpass
+
+    from .auth import list_users, provision_user, set_password
+    from .db import get_pool
+
+    pool = get_pool()  # DATABASE_URL (or the local dev default)
+
+    if args.action == "list":
+        users = list_users(pool)
+        if not users:
+            print("(no users)")
+        for username, can_login in users:
+            print(f"  {username}  {'(active)' if can_login else '(no password set — cannot log in)'}")
+        return 0
+
+    def read_password() -> str | None:
+        pw = args.password or getpass.getpass("Password: ")
+        if not args.password and pw != getpass.getpass("Repeat password: "):
+            print("Passwords do not match.", file=sys.stderr)
+            return None
+        if len(pw) < 8:
+            print("Password must be at least 8 characters.", file=sys.stderr)
+            return None
+        return pw
+
+    pw = read_password()
+    if pw is None:
+        return 1
+    try:
+        if args.action == "add":
+            user = provision_user(pool, args.username, pw)
+            print(f"Provisioned {user.username!r}. They can change the password after first login.")
+        else:  # passwd
+            user = set_password(pool, args.username, pw)
+            print(f"Password reset for {user.username!r} (existing sessions stay valid; "
+                  "they are revoked when the user changes it themselves).")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def cmd_usage(_args: argparse.Namespace) -> int:
     """Show token-usage totals from the per-run log (M5)."""
     config = load_config()
@@ -302,6 +346,17 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("usage", help="show token-usage totals from the per-run log")
 
+    user = sub.add_parser("user", help="provision accounts (v4; login-only, no signup)")
+    user_sub = user.add_subparsers(dest="action", required=True)
+    for action, help_text in (
+        ("add", "create an account with an initial password"),
+        ("passwd", "reset an account's password"),
+    ):
+        p = user_sub.add_parser(action, help=help_text)
+        p.add_argument("username")
+        p.add_argument("--password", help="omit to be prompted securely (recommended)")
+    user_sub.add_parser("list", help="list accounts")
+
     return parser
 
 
@@ -312,6 +367,7 @@ _HANDLERS = {
     "list": cmd_list,
     "serve": cmd_serve,
     "usage": cmd_usage,
+    "user": cmd_user,
 }
 
 

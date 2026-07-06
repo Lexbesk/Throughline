@@ -18,6 +18,7 @@ Schema notes:
 
 from __future__ import annotations
 
+import atexit
 import os
 from uuid import uuid4
 
@@ -54,6 +55,19 @@ _SCHEMA_STATEMENTS = (
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # v4 M17: server-side sessions. The cookie carries a random opaque token;
+    # only its hash is stored, so a database leak yields no usable sessions.
+    """
+    CREATE TABLE IF NOT EXISTS sessions (
+        token_hash TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at TIMESTAMPTZ NOT NULL
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS sessions_user ON sessions (user_id)
+    """,
 )
 
 _POOLS: dict[str, ConnectionPool] = {}
@@ -69,6 +83,7 @@ def get_pool(url: str | None = None) -> ConnectionPool:
     pool = _POOLS.get(url)
     if pool is None:
         pool = ConnectionPool(url, min_size=1, max_size=5, open=True)
+        atexit.register(pool.close)  # clean shutdown (matters for one-shot CLI runs)
         with pool.connection() as conn:
             for statement in _SCHEMA_STATEMENTS:
                 conn.execute(statement)

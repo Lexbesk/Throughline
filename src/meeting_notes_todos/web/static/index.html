@@ -119,6 +119,15 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
           border-radius:20px; padding:1px 8px; white-space:nowrap; }
   #modelTier { font:inherit; font-size:13px; padding:4px 8px; border:1px solid var(--line);
                border-radius:6px; background:var(--panel); color:var(--ink); }
+  #loginOverlay { position:fixed; inset:0; background:var(--bg); display:flex;
+                  align-items:center; justify-content:center; z-index:10; }
+  #loginOverlay.hidden { display:none; } /* the id selector would outrank .hidden */
+  .logincard { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+               padding:28px 30px; width:340px; }
+  .logincard h2 { text-transform:none; letter-spacing:0; font-size:16px; color:var(--ink);
+                  margin:0 0 4px; }
+  .logincard input { width:100%; margin:6px 0; padding:8px 10px; border:1px solid var(--line);
+                     border-radius:6px; background:var(--panel); color:var(--ink); font:inherit; }
   .hidden { display:none; }
 </style>
 <!-- vendored locally (see static/vendor/README.md) so the app works offline;
@@ -134,12 +143,29 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
       <p>One conversation: paste notes or talk through your plans — every change comes back
 as a card you approve. Manage your tasks and profile beside it.</p>
     </div>
+    <span class="status" id="whoami"></span>
+    <button id="logoutBtn" class="hidden" onclick="doLogout()">Log out</button>
     <label class="status" style="display:flex; align-items:center; gap:6px">model
-      <select id="modelTier" onchange="setModelTier(this.value)" title="global model switch"></select>
+      <select id="modelTier" onchange="setModelTier(this.value)" title="model switch"></select>
     </label>
     <button id="themeToggle" onclick="toggleTheme()" title="Toggle night mode">🌙</button>
   </div>
 </header>
+<div id="loginOverlay" class="hidden">
+  <div class="logincard">
+    <h2>Sign in</h2>
+    <div class="status" style="margin-bottom:10px">Invite-only — accounts are provisioned
+by the admin; there is no signup.</div>
+    <input type="text" id="loginUser" placeholder="username" autocomplete="username"
+           onkeydown="if(event.key==='Enter')doLogin()"/>
+    <input type="password" id="loginPass" placeholder="password" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter')doLogin()"/>
+    <div class="controls" style="margin-top:10px">
+      <button class="primary" id="loginBtn" onclick="doLogin()">Sign in</button>
+      <span class="status" id="loginStatus"></span>
+    </div>
+  </div>
+</div>
 <main>
   <section id="manageSection">
     <div class="cols">
@@ -208,11 +234,57 @@ explanations are its stated reasoning, not a trace of its computation.</div>
 const esc = s => (s == null ? "" : String(s)).replace(/[&<>"']/g,
   c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 
-loadStore();
-loadProfile();
-loadModel();
+initAuth();
 
-// --- global model switch (v3 M14): one tier for the whole app, drives the next turn ---
+// --- accounts (v4 M17): login-only; the overlay gates the app in hosted mode ---
+
+function loadAll() { loadStore(); loadProfile(); loadModel(); }
+
+async function initAuth() {
+  try {
+    const me = await (await fetch("/api/me")).json();
+    if (me.auth_required && !me.username) {
+      document.getElementById("loginOverlay").classList.remove("hidden");
+      document.getElementById("loginUser").focus();
+      return; // nothing loads until login succeeds
+    }
+    if (me.username) {
+      document.getElementById("whoami").textContent = me.username;
+      document.getElementById("logoutBtn").classList.remove("hidden");
+    }
+  } catch (e) { /* fall through: local mode */ }
+  loadAll();
+}
+
+async function doLogin() {
+  const status = document.getElementById("loginStatus");
+  const btn = document.getElementById("loginBtn");
+  btn.disabled = true; status.textContent = "…";
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: document.getElementById("loginUser").value.trim(),
+                             password: document.getElementById("loginPass").value }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const data = await res.json();
+    document.getElementById("loginPass").value = "";
+    document.getElementById("loginOverlay").classList.add("hidden");
+    document.getElementById("whoami").textContent = data.username;
+    document.getElementById("logoutBtn").classList.remove("hidden");
+    status.textContent = "";
+    loadAll();
+  } catch (e) {
+    status.textContent = e.message;
+  } finally { btn.disabled = false; }
+}
+
+async function doLogout() {
+  await fetch("/api/logout", { method: "POST" });
+  location.reload(); // clean slate — overlay returns, in-session chat is gone
+}
+
+// --- global model switch (v3 M14; per-user in hosted mode) ---
 
 async function loadModel() {
   try {

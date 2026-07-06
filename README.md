@@ -5,15 +5,20 @@ and merge them into a living TODO list. See `meeting-notes-to-todos-v1-plan.md`
 for the full build brief and `meeting-notes-to-todos-v2-plan.md` for the v2
 extension (M6–M10).
 
-Status: **v1–v3 complete (M0–M15) · v4 in progress — M16 done** (see
+Status: **v1–v3 complete (M0–M15) · v4 in progress — M16–M17 done** (see
 `throughline-v4-plan.md`: hosted, closed-group, per-user). M16 lays the
 database foundation: the store and profile can now run on **Postgres with
 every row scoped by `user_id`** (hard isolation, tested), behind the same thin
 interfaces — select it with `[store] backend = "postgres"` plus a standard
 `DATABASE_URL` (local dev: `docker compose -f deploy/docker-compose.yml up -d`;
-production DB lands at M19). Until accounts arrive (M17), the app acts as one
-configurable default user (`THROUGHLINE_USER`). The local markdown backend
-remains the default. Earlier: (see
+production DB lands at M19). M17 adds **accounts & login** in postgres mode:
+argon2id-hashed passwords, server-side sessions (opaque HttpOnly cookie, only
+the token's hash stored, revocable), a login-only UI — **no signup path** —
+and admin provisioning via `meeting-notes-todos user add|passwd|list`. Every
+data route requires a session and operates on the logged-in user's rows; the
+model-tier switch is per-user; `POST /api/password` changes one's own password
+and revokes other sessions. The local markdown backend remains the default and
+needs no login (single-user mode). Earlier: (see
 `meeting-notes-to-todos-v3-plan.md`: the pivot from capture to planning) — one
 conversational surface turns meeting notes and plans into a living task list,
 behind an advisory accept/reject gate. M11 makes the profile the structured
