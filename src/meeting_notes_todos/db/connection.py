@@ -35,6 +35,11 @@ _SCHEMA_STATEMENTS = (
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
     """,
+    # v4: the user's selected model tier persists in the DB (not in memory), so
+    # it survives restarts and works across machines. Idempotent for existing rows.
+    """
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS model_tier TEXT
+    """,
     """
     CREATE TABLE IF NOT EXISTS todo_items (
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -102,6 +107,22 @@ def get_pool(url: str | None = None) -> ConnectionPool:
                 conn.execute(statement)
         _POOLS[url] = pool
     return pool
+
+
+def get_user_tier(pool: ConnectionPool, user_id: str) -> str | None:
+    """The user's saved model tier, or None (falls back to the config default)."""
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT model_tier FROM users WHERE id = %s", (user_id,)
+        ).fetchone()
+    return row[0] if row and row[0] else None
+
+
+def set_user_tier(pool: ConnectionPool, user_id: str, tier: str) -> None:
+    with pool.connection() as conn:
+        conn.execute(
+            "UPDATE users SET model_tier = %s WHERE id = %s", (tier, user_id)
+        )
 
 
 def ensure_user(pool: ConnectionPool, username: str) -> str:

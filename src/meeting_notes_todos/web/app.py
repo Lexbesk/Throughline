@@ -106,12 +106,13 @@ def healthz() -> dict:
 # --- dependencies (overridable in tests) ------------------------------------
 
 
-# v3 M14 / v4 M17: the model switch. In local (markdown) mode there is one
-# global selection; in hosted (postgres) mode the selection is per-user. Both
-# are in-memory by design — a restart falls back to config, and a durable
-# change is a config edit.
+# The model switch. In local (markdown) mode there is one in-memory global
+# selection (single-user, resets on restart — fine). In hosted (postgres) mode
+# the selection is **persisted per-user in the database**, so it survives
+# restarts and works across machines — without that, a user who picks a model
+# and then chats after the machine has restarted silently reverts to the config
+# default model and is wrongly told to add the other provider's key.
 _current_tier: str | None = None
-_tier_by_user: dict[str, str] = {}
 
 
 def get_config() -> Config:
@@ -147,7 +148,11 @@ def get_current_user(request: Request, config: Config = Depends(get_config)) -> 
 
 
 def _tier_for(user: User | None) -> str | None:
-    return _tier_by_user.get(user.id) if user else _current_tier
+    if user is None:
+        return _current_tier  # local single-user mode
+    from ..db import get_pool, get_user_tier
+
+    return get_user_tier(get_pool(), user.id)  # durable per-user selection
 
 
 def effective_llm(config: Config, tier: str | None) -> "LLMConfig":
@@ -572,8 +577,8 @@ def api_put_model(
     config: Config = Depends(get_config),
     user: User | None = Depends(get_current_user),
 ) -> dict:
-    """Select the model tier for the next turn — per-user when logged in (v4 M17),
-    app-wide in local single-user mode (v3 §6)."""
+    """Select the model tier — persisted per-user when logged in, app-wide
+    in-memory in local single-user mode."""
     global _current_tier
     if req.tier not in config.llm.tiers:
         raise HTTPException(
@@ -581,7 +586,9 @@ def api_put_model(
             detail=f"unknown tier {req.tier!r}; configured tiers: {sorted(config.llm.tiers)}",
         )
     if user is not None:
-        _tier_by_user[user.id] = req.tier
+        from ..db import get_pool, set_user_tier
+
+        set_user_tier(get_pool(), user.id, req.tier)  # durable across restarts/machines
     else:
         _current_tier = req.tier
     return api_get_model(config, user)

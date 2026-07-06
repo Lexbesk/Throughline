@@ -60,7 +60,7 @@ def pg_mode():
     app.dependency_overrides[get_config] = _pg_config
     yield
     app.dependency_overrides.clear()
-    web_app._tier_by_user.clear()
+    web_app._current_tier = None
 
 
 @pytest.fixture()
@@ -164,6 +164,20 @@ def test_model_tier_is_per_user(pg_mode, account):
     a.put("/api/model", json={"tier": "Sonnet 5"})
     assert a.get("/api/model").json()["tier"] == "Sonnet 5"
     assert b.get("/api/model").json()["tier"] is None  # B is unaffected
+
+
+@pytestmark_db
+def test_model_tier_survives_a_server_restart(pg_mode, account):
+    """Regression: a user's model choice is persisted in the DB, so it isn't
+    lost when the process restarts (or a Fly machine stops) between selecting
+    the model and the next request — which used to revert them to the default
+    model and wrongly demand the other provider's key."""
+    username, password = account()
+    _login(username, password).put("/api/model", json={"tier": "GPT 5.5"})
+
+    # a brand-new client with no in-memory state = a fresh process/machine
+    fresh = _login(username, password)
+    assert fresh.get("/api/model").json()["tier"] == "GPT 5.5"  # still their choice
 
 
 @pytestmark_db

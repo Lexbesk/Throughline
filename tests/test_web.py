@@ -55,7 +55,7 @@ def test_index_is_served():
     client = TestClient(app)
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "<html" in resp.text.lower() and "Meeting Notes" in resp.text
+    assert "<html" in resp.text.lower() and "Throughline" in resp.text
 
 
 def test_review_then_commit_writes_only_accepted_items(tmp_path):

@@ -161,7 +161,7 @@ def pg_mode():
     app.dependency_overrides[get_config] = _pg_config
     yield
     app.dependency_overrides.clear()
-    web_app._tier_by_user.clear()
+    web_app._current_tier = None
 
 
 @pytest.fixture()
