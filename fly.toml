@@ -1,0 +1,48 @@
+# Throughline — Fly.io app config (v4 M19).
+# NO SECRETS HERE. Secrets (DATABASE_URL, THROUGHLINE_MASTER_KEY,
+# THROUGHLINE_SESSION_SECRET) are set with `fly secrets set` and injected as
+# environment variables at runtime — never committed. See PRODUCTION_DEPLOY.md.
+
+# Set on first deploy (`fly launch` writes it, or `fly apps create <name>`).
+app = "throughline-austin"
+# Pick the region nearest you: `fly platform regions`. iad = US-East (Ashburn).
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret runtime config. These are safe to commit.
+[env]
+  THROUGHLINE_STORE_BACKEND = "postgres"   # run on Postgres (per-user data + auth)
+  THROUGHLINE_SECURE_COOKIES = "1"         # Secure flag on session cookies (HTTPS)
+  THROUGHLINE_RATE_LIMIT = "1"             # enable API/auth rate limiting
+
+# Ensure the DB schema exists before the new version takes traffic. Runs with
+# the app's secrets (so DATABASE_URL is available) and fails the deploy if the
+# database is unreachable.
+[deploy]
+  release_command = "meeting-notes-todos initdb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true                # redirect http → https (Fly terminates TLS)
+  auto_stop_machines = "stop"       # scale to zero when idle (cost)
+  auto_start_machines = true        # wake on the next request
+  min_machines_running = 0          # set to 1 to avoid cold-start latency
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 40
+    hard_limit = 60
+
+  # Platform health check → the app's liveness probe.
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

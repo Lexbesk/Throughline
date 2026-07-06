@@ -31,5 +31,10 @@ meeting-notes-todos = "meeting_notes_todos.app:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# ship the web UI assets inside the wheel so a non-editable `pip install .` (the
+# Docker image build, v4 M19) includes index.html and the vendored JS libraries
+[tool.setuptools.package-data]
+"meeting_notes_todos.web" = ["static/*", "static/vendor/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

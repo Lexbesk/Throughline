@@ -7,6 +7,7 @@ generation params, store path, and prompt-file locations).
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -71,6 +72,10 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> Config:
 
     A missing file or missing sections fall back to the model defaults, so the
     app is runnable even before ``config.toml`` is customized.
+
+    v4 M19: ``THROUGHLINE_STORE_BACKEND`` (set in the production environment)
+    overrides ``[store] backend`` so the hosted container runs on Postgres
+    without shipping a separate prod config file — 12-factor over a file swap.
     """
     path = Path(path)
     if path.exists():
@@ -78,4 +83,8 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> Config:
             data = tomllib.load(f)
     else:
         data = {}
-    return Config(**data)
+    config = Config(**data)
+    backend = os.environ.get("THROUGHLINE_STORE_BACKEND")
+    if backend:
+        config.store.backend = backend
+    return config

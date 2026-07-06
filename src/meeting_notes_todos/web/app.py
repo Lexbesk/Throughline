@@ -17,9 +17,11 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from .ratelimit import RATE_LIMITS, RateLimiter, bucket_for
 
 from ..auth import (
     COOKIE_NAME,
@@ -66,6 +68,39 @@ _INDEX_HTML = (_STATIC_DIR / "index.html").read_text(encoding="utf-8")
 app = FastAPI(title="Meeting Notes → TODOs")
 # vendored client libraries (marked, DOMPurify) — served locally so the app works offline
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+_rate_limiter = RateLimiter()
+
+
+def _client_ip(request: Request) -> str:
+    # behind Fly's proxy the real client is in Fly-Client-IP; fall back to the
+    # first X-Forwarded-For hop, then the socket peer
+    return (
+        request.headers.get("fly-client-ip")
+        or (request.headers.get("x-forwarded-for", "").split(",")[0].strip())
+        or (request.client.host if request.client else "unknown")
+    )
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    """Throttle /api/* per client IP when THROUGHLINE_RATE_LIMIT is set (prod)."""
+    path = request.url.path
+    if os.environ.get("THROUGHLINE_RATE_LIMIT") and path.startswith("/api/"):
+        bucket = bucket_for(path)
+        limit, window = RATE_LIMITS[bucket]
+        if not _rate_limiter.allow(f"{bucket}:{_client_ip(request)}", limit, window):
+            return JSONResponse(
+                {"detail": "Too many requests — slow down and retry shortly."},
+                status_code=429,
+            )
+    return await call_next(request)
+
+
+@app.get("/healthz")
+def healthz() -> dict:
+    """Liveness probe for the platform health check (no auth, no DB)."""
+    return {"status": "ok"}
 
 
 # --- dependencies (overridable in tests) ------------------------------------

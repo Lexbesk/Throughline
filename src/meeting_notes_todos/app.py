@@ -241,6 +241,18 @@ def cmd_user(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_initdb(_args: argparse.Namespace) -> int:
+    """Ensure the database schema exists (v4 M19: the Fly release command).
+
+    Connecting through the pool creates the tables idempotently, so this is safe
+    to run on every deploy and fails loudly if DATABASE_URL is wrong/unreachable."""
+    from .db import database_url, get_pool
+
+    get_pool()  # opens the pool and runs the schema statements
+    print(f"database schema ensured at {database_url().rsplit('@', 1)[-1]}")
+    return 0
+
+
 def cmd_keygen(_args: argparse.Namespace) -> int:
     """Print a fresh master encryption key for per-user API keys (v4 M18)."""
     from .keys import MASTER_KEY_ENV, generate_master_key
@@ -371,6 +383,7 @@ def _build_parser() -> argparse.ArgumentParser:
     user_sub.add_parser("list", help="list accounts")
 
     sub.add_parser("keygen", help="print a master encryption key for per-user API keys (v4)")
+    sub.add_parser("initdb", help="ensure the DB schema exists (v4 deploy release step)")
 
     return parser
 
@@ -384,6 +397,7 @@ _HANDLERS = {
     "usage": cmd_usage,
     "user": cmd_user,
     "keygen": cmd_keygen,
+    "initdb": cmd_initdb,
 }
 
 

@@ -1,0 +1,28 @@
+# Keep secrets, local data, and dev-only files out of the build context/image.
+.env
+.env.*
+!.env.example
+local-run/
+data/
+deploy/
+tests/
+
+# VCS / tooling / caches
+.git/
+.gitignore
+.github/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Personal scratch and planning docs (not needed at runtime)
+*.local.md
+samples/
+examples/
+meeting-notes-to-todos-*-plan.md
+throughline-v4-plan.md
+PRODUCTION_DEPLOY.md

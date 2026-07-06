@@ -1,14 +1,22 @@
-"""Server-side sessions (v4 M17).
+"""Server-side sessions (v4 M17; keyed hashing added in M19).
 
 The browser holds a random opaque token in an HttpOnly cookie; the database
-holds only the token's SHA-256, so a leaked database can't impersonate anyone.
+holds only a hash of the token, so a leaked database can't impersonate anyone.
 Sessions expire after ``SESSION_TTL_DAYS`` and can be revoked server-side
 (logout deletes the row; a password change deletes all of a user's rows).
+
+v4 M19 hardening: when ``THROUGHLINE_SESSION_SECRET`` is set (a required
+production secret, from platform config — never the repo/DB), tokens are hashed
+with **HMAC-SHA256 keyed by that secret** instead of a bare SHA-256. The secret
+never leaves the server, so a database dump can't be used to verify guessed
+tokens offline. In dev, with no secret set, it falls back to plain SHA-256.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
+import os
 import secrets
 
 from psycopg_pool import ConnectionPool
@@ -17,9 +25,13 @@ from .accounts import User
 
 COOKIE_NAME = "throughline_session"
 SESSION_TTL_DAYS = 30
+SESSION_SECRET_ENV = "THROUGHLINE_SESSION_SECRET"
 
 
 def _token_hash(token: str) -> str:
+    secret = os.environ.get(SESSION_SECRET_ENV)
+    if secret:  # keyed hash — the key lives only in platform secrets (M19)
+        return hmac.new(secret.encode("utf-8"), token.encode("utf-8"), hashlib.sha256).hexdigest()
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
