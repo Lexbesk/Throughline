@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Meeting Notes → TODOs</title>
+<script>/* apply the saved theme before first paint to avoid a flash */
+document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "light";</script>
+<style>
+  :root { --line:#e3e0d8; --ink:#2b2b2b; --muted:#77736b; --bg:#faf8f3;
+          --panel:#ffffff; --soft:#f0ebe0;
+          --new:#2e7d46; --update:#1c6ea4; --dup:#8a857c; --accent:#b4552d;
+          --prio-high:#b4372d; --prio-med:#a06a00; }
+  :root[data-theme="dark"] {
+          --line:#3a372f; --ink:#e8e5de; --muted:#a39d90; --bg:#1b1a17;
+          --panel:#242320; --soft:#33302a;
+          --new:#3f9c62; --update:#4f94cd; --dup:#8a857c; --accent:#c96a41;
+          --prio-high:#e08a7d; --prio-med:#d0a955; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; color:var(--ink); background:var(--bg); }
+  header { padding:16px 24px; border-bottom:1px solid var(--line); }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header p { margin:2px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:1320px; margin:0 auto; padding:20px 24px 60px; }
+  section { margin-bottom:26px; }
+  h2 { font-size:14px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 10px; }
+  textarea { width:100%; min-height:130px; padding:10px; border:1px solid var(--line); border-radius:8px; font:inherit; background:var(--panel); }
+  input[type=text], input[type=date] { padding:6px 8px; border:1px solid var(--line); border-radius:6px; font:inherit; background:var(--panel); }
+  .controls { display:flex; gap:12px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; color:var(--ink); }
+  input, select, textarea { color:var(--ink); }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  button:disabled { opacity:.5; cursor:default; }
+  .status { color:var(--muted); font-size:13px; }
+  .cols { display:flex; gap:20px; align-items:flex-start; }
+  .cols > div { flex:1; min-width:0; }
+  pre.notes { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin:0; font:inherit; }
+  .card { background:var(--panel); border:1px solid var(--line); border-left-width:4px; border-radius:8px; padding:12px; margin-bottom:12px; }
+  .card.new { border-left-color:var(--new); }
+  .card.update { border-left-color:var(--update); }
+  .card.duplicate { border-left-color:var(--dup); opacity:.72; }
+  .card .top { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+  .badge { font-size:11px; font-weight:700; letter-spacing:.05em; padding:2px 7px; border-radius:20px; color:#fff; }
+  .badge.new{background:var(--new)} .badge.update{background:var(--update)} .badge.duplicate{background:var(--dup)}
+  .card label { display:block; font-size:12px; color:var(--muted); margin:6px 0 0; }
+  .card label input { width:100%; margin-top:2px; }
+  .resolved { color:var(--muted); font-size:12px; }
+  .meta { font-size:12px; color:var(--muted); margin-top:8px; }
+  .meta b { color:var(--update); font-weight:600; }
+  .snippet { font-size:12px; color:var(--muted); font-style:italic; margin-top:8px; }
+  .spacer { flex:1; }
+  ul.tasks { list-style:none; padding:0; margin:0; }
+  ul.tasks li { display:flex; align-items:center; gap:10px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-bottom:8px; }
+  ul.tasks .body { flex:1; min-width:0; }
+  ul.tasks .m { color:var(--muted); font-size:12px; }
+  ul.tasks li.cancelled .t { text-decoration:line-through; color:var(--muted); }
+  ul.tasks li.cancelled { opacity:.65; }
+  ul.tasks li.done { opacity:.85; }
+  ul.tasks li.done .t { color:var(--muted); }
+  .prio { font-size:12px; padding:3px 4px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--muted); }
+  .prio.high { color:var(--prio-high); border-color:#d09790; font-weight:600; }
+  .prio.medium { color:var(--prio-med); border-color:#d9bc7a; }
+  .mv { padding:2px 8px; font-size:12px; }
+  button.link { border:none; background:none; color:var(--muted); text-decoration:underline; font-size:12px; padding:2px; }
+  .chatlog { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-height:300px; max-height:64vh; overflow-y:auto; }
+  .msg { margin:0 0 10px; white-space:pre-wrap; }
+  .msg.user { background:var(--soft); border-radius:8px; padding:8px 10px; margin-left:40px;
+              max-height:130px; overflow-y:auto; }
+  .msg.note { color:var(--muted); font-size:12px; }
+  .chatlog .review-block { display:flex; gap:10px; align-items:flex-start; margin:8px 0 12px; }
+  .chatlog .review-block pre.notes { flex:0 0 44%; min-width:0; font-size:12px;
+                                     max-height:420px; overflow-y:auto; }
+  .chatlog .review-block .cards-col { flex:1; min-width:0; }
+  .chatlog .review-block .card { margin:0 0 10px; }
+  .chatlog .card { margin:8px 0 10px; }
+  .card.delete { border-left-color:#a03030; }
+  .card.merge { border-left-color:#6a4fa3; }
+  .card.reprioritize { border-left-color:var(--prio-med); }
+  .card.complete { border-left-color:var(--new); }
+  .card.profile { border-left-color:#1c7a74; }
+  .badge.delete{background:#a03030} .badge.merge{background:#6a4fa3}
+  .badge.reprioritize{background:var(--prio-med)} .badge.complete{background:var(--new)}
+  .badge.profile{background:#1c7a74}
+  textarea.profile { min-height:84px; font-size:13px; }
+  /* profile panel typography: section headers use the app's muted-uppercase
+     overline idiom (same as the TASK LIST / ASSISTANT panel labels), so they
+     read as structure — categorically distinct from bold <strong> body text */
+  .profileview { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+                 padding:14px 16px; font-size:13px; line-height:1.55; }
+  .profileview h1 { font-size:15px; font-weight:700; color:var(--ink); margin:0 0 10px; }
+  .profileview h2 { font-size:11px; font-weight:700; text-transform:uppercase;
+                    letter-spacing:.06em; color:var(--muted);
+                    margin:14px 0 6px; padding-top:12px; border-top:1px solid var(--line); }
+  .profileview h1 + h2, .profileview h2:first-child { border-top:none; padding-top:0; margin-top:0; }
+  .profileview h3 { font-size:13px; font-weight:700; color:var(--ink); margin:10px 0 4px;
+                    text-transform:none; letter-spacing:0; }
+  .profileview p, .profileview ul, .profileview ol { margin:0 0 10px; }
+  .profileview p:has(+ ul), .profileview p:has(+ ol) { margin-bottom:4px; }
+  .profileview ul, .profileview ol { padding-left:20px; }
+  .profileview li { margin:0 0 4px; }
+  .profileview li::marker { color:var(--muted); }
+  .profileview strong { font-weight:700; color:var(--ink); }
+  .profileview em { color:var(--muted); }
+  .profileview > :last-child { margin-bottom:0; }
+  ul.tasks li.deleted { opacity:.8; }
+  ul.tasks li.deleted .t { color:var(--muted); }
+  .msg.bot { white-space:normal; }
+  .msg.bot p, .msg.bot ul, .msg.bot ol, .msg.bot pre, .msg.bot blockquote { margin:0 0 8px; }
+  .msg.bot > :last-child { margin-bottom:0; }
+  .msg.bot ul, .msg.bot ol { padding-left:20px; }
+  .msg.bot code { background:var(--soft); padding:1px 4px; border-radius:4px; font-size:13px; }
+  .msg.bot pre { background:var(--soft); padding:8px 10px; border-radius:6px; overflow-x:auto; }
+  .msg.bot pre code { background:none; padding:0; }
+  .msg.bot h1, .msg.bot h2, .msg.bot h3 { font-size:14px; margin:0 0 6px;
+    text-transform:none; letter-spacing:0; color:var(--ink); }
+  .msg.bot blockquote { border-left:3px solid var(--line); padding-left:10px; color:var(--muted); }
+  .caveat { color:var(--muted); font-size:12px; font-style:italic; margin:0 0 10px; }
+  .dest { font-size:11px; color:var(--muted); border:1px solid var(--line);
+          border-radius:20px; padding:1px 8px; white-space:nowrap; }
+  #modelTier { font:inherit; font-size:13px; padding:4px 8px; border:1px solid var(--line);
+               border-radius:6px; background:var(--panel); color:var(--ink); }
+  .hidden { display:none; }
+</style>
+<!-- vendored locally (see static/vendor/README.md) so the app works offline;
+     if either fails to load, chat replies fall back to plain text -->
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+</head>
+<body>
+<header>
+  <div style="display:flex; align-items:center; gap:16px; max-width:1320px; margin:0 auto">
+    <div style="flex:1">
+      <h1>Meeting Notes → TODOs</h1>
+      <p>One conversation: paste notes or talk through your plans — every change comes back
+as a card you approve. Manage your tasks and profile beside it.</p>
+    </div>
+    <label class="status" style="display:flex; align-items:center; gap:6px">model
+      <select id="modelTier" onchange="setModelTier(this.value)" title="global model switch"></select>
+    </label>
+    <button id="themeToggle" onclick="toggleTheme()" title="Toggle night mode">🌙</button>
+  </div>
+</header>
+<main>
+  <section id="manageSection">
+    <div class="cols">
+      <div style="order:2"><!-- todos on the right; the assistant leads on the left -->
+        <div class="controls" style="margin:0 0 10px">
+          <h2 style="margin:0">Task list (<span id="storeCount">0</span>)</h2>
+          <span class="spacer"></span>
+          <span class="status" id="listStatus"></span>
+        </div>
+        <ul class="tasks" id="taskList"></ul>
+        <div id="completedSection" class="hidden">
+          <div class="controls" style="margin:18px 0 10px">
+            <h2 style="margin:0">Completed (<span id="completedCount">0</span>)</h2>
+          </div>
+          <ul class="tasks" id="completedList"></ul>
+        </div>
+        <div id="deletedSection" class="hidden">
+          <div class="controls" style="margin:18px 0 10px">
+            <h2 style="margin:0">Deleted (<span id="deletedCount">0</span>)</h2>
+          </div>
+          <ul class="tasks" id="deletedList"></ul>
+        </div>
+        <div id="profileSection">
+          <div class="controls" style="margin:18px 0 10px">
+            <h2 style="margin:0">Profile</h2>
+            <span class="spacer"></span>
+            <button id="profileEditBtn" onclick="toggleProfileEdit()">Edit</button>
+            <button id="profileSaveBtn" class="primary hidden" onclick="saveProfile()">Save</button>
+            <span class="status" id="profileStatus"></span>
+          </div>
+          <div id="profileView" class="profileview"></div>
+          <textarea id="profileText" class="profile hidden" style="min-height:180px"></textarea>
+          <div class="caveat" style="margin-top:6px">Your north star — injected into every
+turn. Hand-edit freely; the assistant proposes section updates you approve. Keep each
+section a few tight lines.</div>
+        </div>
+      </div>
+      <div style="order:1">
+        <div class="controls" style="margin:0 0 10px">
+          <h2 style="margin:0">Assistant</h2>
+          <span class="spacer"></span>
+          <button onclick="reviewPlan()"
+                  title="Ask the assistant to review your task list against the goals and focus in your profile">Review plan vs goals</button>
+        </div>
+        <div class="chatlog" id="chatLog">
+          <div class="msg note">One box for everything: paste meeting notes (or any raw text)
+to pull action items out of it, or just talk — planning, priorities, cleanup. Every
+concrete change appears as a card you accept or reject; nothing is applied without
+your say-so. Pasted items show their source beside the cards so you can catch what
+the model missed. The conversation lasts for this page session, and the assistant's
+explanations are its stated reasoning, not a trace of its computation.</div>
+        </div>
+        <div class="controls" style="margin-top:10px; align-items:flex-end">
+          <textarea id="chatInput" rows="5" style="flex:1; min-height:120px; resize:vertical"
+                    placeholder="Paste notes here, or ask anything — Enter to send, Shift+Enter for a new line"
+                    onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendChat();}"></textarea>
+          <button class="primary" id="chatSend" onclick="sendChat()">Send</button>
+        </div>
+        <div class="status" id="chatStatus" style="margin-top:6px"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const esc = s => (s == null ? "" : String(s)).replace(/[&<>"']/g,
+  c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+
+loadStore();
+loadProfile();
+loadModel();
+
+// --- global model switch (v3 M14): one tier for the whole app, drives the next turn ---
+
+async function loadModel() {
+  try {
+    renderModelSelect(await (await fetch("/api/model")).json());
+  } catch (e) { /* ignore on first load */ }
+}
+
+function renderModelSelect(data) {
+  const sel = document.getElementById("modelTier");
+  const current = data.tier ||
+    Object.keys(data.tiers).find(t => data.tiers[t] === data.model) || "";
+  sel.innerHTML = Object.keys(data.tiers).map(t =>
+    `<option value="${esc(t)}" ${t === current ? "selected" : ""}>${esc(t)}</option>`).join("") +
+    (current ? "" : `<option value="" selected>custom</option>`);
+  sel.title = `global model switch — currently ${data.model}`;
+}
+
+async function setModelTier(tier) {
+  if (!tier) return;
+  try {
+    const res = await fetch("/api/model", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tier }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    renderModelSelect(await res.json());
+  } catch (e) {
+    loadModel(); // resync the selector with the server
+  }
+}
+
+// --- night mode: persisted in localStorage; the <head> snippet applies it pre-paint ---
+
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  localStorage.setItem("mnt-theme", t);
+  document.getElementById("themeToggle").textContent = t === "dark" ? "☀️" : "🌙";
+}
+function toggleTheme() {
+  applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+}
+applyTheme(document.documentElement.dataset.theme || "light");
+
+// --- user profile (M9, sectioned + rendered in M11): the north star. ---
+// Rendered as markdown; hand-editable; the assistant proposes per-section updates.
+
+let profileRaw = "";
+
+function renderProfileView() {
+  const view = document.getElementById("profileView");
+  if (window.marked && window.DOMPurify) {
+    view.innerHTML = DOMPurify.sanitize(marked.parse(profileRaw, { breaks: true, gfm: true }));
+  } else {
+    view.textContent = profileRaw;
+  }
+}
+
+async function loadProfile() {
+  try {
+    const data = await (await fetch("/api/profile")).json();
+    profileRaw = data.profile;
+    renderProfileView();
+  } catch (e) { /* ignore on first load */ }
+}
+
+function toggleProfileEdit() {
+  const editing = document.getElementById("profileText").classList.contains("hidden");
+  if (editing) document.getElementById("profileText").value = profileRaw;
+  document.getElementById("profileText").classList.toggle("hidden", !editing);
+  document.getElementById("profileView").classList.toggle("hidden", editing);
+  document.getElementById("profileSaveBtn").classList.toggle("hidden", !editing);
+  document.getElementById("profileEditBtn").textContent = editing ? "Cancel" : "Edit";
+}
+
+async function saveProfile() {
+  const status = document.getElementById("profileStatus");
+  try {
+    const res = await fetch("/api/profile", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profile: document.getElementById("profileText").value }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    profileRaw = (await res.json()).profile;
+    renderProfileView();
+    toggleProfileEdit();
+    status.textContent = "Saved.";
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+  }
+}
+
+// --- management view (M6): tasks holds the store items in display (file) order ---
+
+let tasks = [];
+
+async function loadStore() {
+  try {
+    const data = await (await fetch("/api/store")).json();
+    renderTasks(data.items);
+  } catch (e) { /* ignore on first load */ }
+}
+
+function renderTasks(items) {
+  tasks = items;
+  const activeIdx = [], completedIdx = [], deletedIdx = [];
+  items.forEach((it, i) => (it.status === "deleted" ? deletedIdx :
+                            it.status === "done" ? completedIdx : activeIdx).push(i));
+  const first = activeIdx[0], last = activeIdx[activeIdx.length - 1];
+
+  document.getElementById("storeCount").textContent = activeIdx.length;
+  document.getElementById("taskList").innerHTML = activeIdx.map(i => {
+    const it = items[i];
+    const meta = [it.owner ? `@${esc(it.owner)}` : null,
+      it.due_date ? `due ${esc(it.due_date)}` : (it.due_date_text ? `due “${esc(it.due_date_text)}” (unresolved)` : null),
+      it.status === "doing" ? "in progress" : null,
+      it.status === "cancelled" ? "cancelled" : null]
+      .filter(Boolean).join(" · ");
+    const cancelled = it.status === "cancelled";
+    const prio = ["", "high", "medium", "low"].map(p =>
+      `<option value="${p}" ${(it.priority || "") === p ? "selected" : ""}>${p ? "!" + p : "priority"}</option>`).join("");
+    return `<li class="${esc(it.status)}">
+      <input type="checkbox" ${cancelled ? "disabled" : ""}
+             onchange="setStatus(${i}, this.checked ? 'done' : 'todo')" title="mark done" />
+      <div class="body"><div class="t">${esc(it.title)}</div>${meta ? `<div class="m">${meta}</div>` : ""}</div>
+      <select class="prio ${esc(it.priority || "")}" onchange="setPriority(${i}, this.value)" title="priority">${prio}</select>
+      <button class="mv" onclick="moveItem(${i}, -1)" ${i === first ? "disabled" : ""} title="move up">↑</button>
+      <button class="mv" onclick="moveItem(${i}, 1)" ${i === last ? "disabled" : ""} title="move down">↓</button>
+      <button class="link" onclick="setStatus(${i}, '${cancelled ? "todo" : "cancelled"}')">${cancelled ? "restore" : "cancel"}</button>
+      <button class="link" onclick="setStatus(${i}, 'deleted')">delete</button>
+    </li>`;
+  }).join("") || `<li style="border:none;background:none" class="m">No items yet.</li>`;
+
+  document.getElementById("completedCount").textContent = completedIdx.length;
+  document.getElementById("completedSection").classList.toggle("hidden", completedIdx.length === 0);
+  document.getElementById("completedList").innerHTML = completedIdx.map(i => {
+    const it = items[i];
+    const meta = [it.owner ? `@${esc(it.owner)}` : null,
+      it.due_date ? `due ${esc(it.due_date)}` : null].filter(Boolean).join(" · ");
+    return `<li class="done">
+      <div class="body"><div class="t">${esc(it.title)}</div>${meta ? `<div class="m">${meta}</div>` : ""}</div>
+      <button class="link" onclick="setStatus(${i}, 'todo')">uncomplete</button>
+      <button class="link" onclick="setStatus(${i}, 'deleted')">delete</button>
+    </li>`;
+  }).join("");
+
+  document.getElementById("deletedCount").textContent = deletedIdx.length;
+  document.getElementById("deletedSection").classList.toggle("hidden", deletedIdx.length === 0);
+  document.getElementById("deletedList").innerHTML = deletedIdx.map(i => {
+    const it = items[i];
+    const meta = [it.owner ? `@${esc(it.owner)}` : null,
+      it.due_date ? `due ${esc(it.due_date)}` : null].filter(Boolean).join(" · ");
+    return `<li class="deleted">
+      <div class="body"><div class="t">${esc(it.title)}</div>${meta ? `<div class="m">${meta}</div>` : ""}</div>
+      <button class="link" onclick="setStatus(${i}, 'todo')">restore</button>
+      <button class="link" onclick="deleteForever(${i})">delete forever</button>
+    </li>`;
+  }).join("");
+}
+
+async function deleteForever(i) {
+  const status = document.getElementById("listStatus");
+  try {
+    const res = await fetch(`/api/items/${encodeURIComponent(tasks[i].id)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    renderTasks((await res.json()).items);
+    status.textContent = "Removed permanently.";
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+    loadStore();
+  }
+}
+
+function setStatus(i, status) { patchItem(i, { status }); }
+function setPriority(i, value) { patchItem(i, { priority: value || null }); }
+
+async function patchItem(i, body) {
+  const status = document.getElementById("listStatus");
+  try {
+    const res = await fetch(`/api/items/${encodeURIComponent(tasks[i].id)}`, {
+      method: "PATCH", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    tasks[i] = (await res.json()).item;
+    renderTasks(tasks);
+    status.textContent = "Saved.";
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+    loadStore(); // resync with the store (e.g. the list changed underneath us)
+  }
+}
+
+async function moveItem(i, dir) {
+  let j = i + dir; // nearest neighbour still in the active list (skip done/deleted)
+  while (j >= 0 && j < tasks.length &&
+         (tasks[j].status === "deleted" || tasks[j].status === "done")) j += dir;
+  if (j < 0 || j >= tasks.length) return;
+  const ids = tasks.map(t => t.id);
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  const status = document.getElementById("listStatus");
+  try {
+    const res = await fetch("/api/items/reorder", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    renderTasks((await res.json()).items);
+    status.textContent = "Saved.";
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+    loadStore();
+  }
+}
+
+// --- the assistant (M8; unified surface in M12): one box for conversation AND
+// --- pasted notes. Advisory-first — proposals are cards, nothing applies until
+// --- Accept. History is in-session only (page reload = new conversation).
+
+let chatHistory = [];
+let chatProps = [];
+
+function chatEl() { return document.getElementById("chatLog"); }
+
+function appendMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  if (role === "bot" && window.marked && window.DOMPurify) {
+    // model output: markdown-parse then sanitize — never inserted as raw HTML.
+    // Falls back to plain text if the vendored libraries didn't load.
+    div.innerHTML = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+  } else {
+    div.textContent = text;
+  }
+  chatEl().appendChild(div);
+  chatEl().scrollTop = chatEl().scrollHeight;
+}
+
+async function sendChat() {
+  const input = document.getElementById("chatInput");
+  const btn = document.getElementById("chatSend");
+  const status = document.getElementById("chatStatus");
+  const text = input.value.trim();
+  if (!text || btn.disabled) return;
+  const pasteLike = text.includes("\n") || text.length > 160;
+  appendMsg("user", text);
+  chatHistory.push({ role: "user", content: text });
+  input.value = "";
+  btn.disabled = true; status.textContent = "Thinking…";
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: chatHistory }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const data = await res.json();
+    // proposals are out-of-band of the prose history, so leave a marker for the
+    // next turn — otherwise the model can't tell it already staged cards
+    const stagedNote = data.proposals.length
+      ? `\n\n[Staged ${data.proposals.length} proposal card(s) — awaiting the user's accept/reject.]`
+      : "";
+    chatHistory.push({ role: "assistant", content: (data.message || "") + stagedNote });
+    appendMsg("bot", data.message || "(proposals only)");
+    // miss-catching (M4/M12): pasted input renders beside its proposal cards
+    let host = null;
+    if (pasteLike && data.proposals.length) {
+      const block = document.createElement("div");
+      block.className = "review-block";
+      const src = document.createElement("pre");
+      src.className = "notes src";
+      src.textContent = text;
+      const col = document.createElement("div");
+      col.className = "cards-col";
+      block.appendChild(src);
+      block.appendChild(col);
+      chatEl().appendChild(block);
+      host = col;
+    }
+    data.proposals.forEach(p => appendProposal(p, host));
+    if (data.dropped.length)
+      appendMsg("note", `Dropped ${data.dropped.length} invalid proposal(s): ${data.dropped.join("; ")}`);
+    status.textContent = `${data.usage.input_tokens}+${data.usage.output_tokens} tokens`;
+  } catch (e) {
+    appendMsg("note", "Error: " + e.message);
+    status.textContent = "";
+  } finally { btn.disabled = false; input.focus(); }
+}
+
+function reviewPlan() {
+  // the M15 gap-analysis affordance: seeds a canonical review turn
+  const input = document.getElementById("chatInput");
+  input.value = "Review my plan against my goals: compare my current task list with the " +
+    "Long-term goals and Current focus in my profile. What's missing, what's drifting, " +
+    "and what would you change? Cite the specific goals.";
+  sendChat();
+}
+
+function appendProposal(p, host) {
+  const k = chatProps.push({ ...p, state: "pending" }) - 1;
+  const div = document.createElement("div");
+  div.className = "card " + p.op;
+  div.id = `prop${k}`;
+  div.innerHTML = propBody(p, k) + `
+    <div class="controls" style="margin-top:8px" id="prop${k}-actions">
+      <button class="primary" onclick="acceptProp(${k})">Accept</button>
+      <button onclick="rejectProp(${k})">Reject</button>
+    </div>`;
+  (host || chatEl()).appendChild(div);
+  chatEl().scrollTop = chatEl().scrollHeight;
+}
+
+function destTag(p) {
+  // every card names its destination (v3 §4.2): the todo list or the profile
+  const where = p.target === "profile" ? "Profile" : "Task list";
+  return `<span class="spacer"></span><span class="dest">→ ${where}</span>`;
+}
+
+function propBody(p, k) {
+  const badge = `<span class="badge ${p.op}">${p.op.toUpperCase()}</span>`;
+  const t = p.item;
+  if (p.op === "new") {
+    return `<div class="top">${badge}${destTag(p)}</div>
+      <label>Title <input type="text" id="prop${k}-title" value="${esc(p.title)}"/></label>
+      <label>Owner <input type="text" id="prop${k}-owner" value="${esc(p.owner)}"/></label>
+      <label>Due <input type="text" id="prop${k}-due" value="${esc(p.due_date_text)}"/></label>
+      <label>Notes <input type="text" id="prop${k}-desc" value="${esc(p.description)}"/></label>
+      ${p.priority ? `<div class="meta">priority: <b>${esc(p.priority)}</b></div>` : ""}
+      ${p.source_snippet ? `<div class="snippet">↳ ${esc(p.source_snippet)}</div>` : ""}`;
+  }
+  if (p.op === "update") {
+    const rows = (p.changes || []).map(c =>
+      `<label>${esc(c.field)} <span class="resolved">was: ${esc(c.before == null ? "—" : c.before)}</span>
+        <input type="text" id="prop${k}-${esc(c.field)}" value="${esc(c.after)}"/></label>`).join("");
+    return `<div class="top">${badge} <b>${esc(t.title)}</b>${destTag(p)}</div>${rows}`;
+  }
+  if (p.op === "merge") {
+    return `<div class="top">${badge}${destTag(p)}</div>
+      <div class="meta">keep: <b>${esc(t.title)}</b></div>
+      <div class="meta">absorb: <b>${esc(p.absorb.title)}</b> — will be removed; its details fill gaps in the kept task</div>
+      ${p.title ? `<div class="meta">merged title: <b>${esc(p.title)}</b></div>` : ""}`;
+  }
+  if (p.op === "reprioritize") {
+    const bits = [p.priority ? `priority → ${esc(p.priority)}` : null,
+                  p.position != null ? `position → ${p.position}` : null].filter(Boolean).join(", ");
+    return `<div class="top">${badge} <b>${esc(t.title)}</b>${destTag(p)}</div><div class="meta">${bits}</div>`;
+  }
+  if (p.op === "profile") {
+    return `<div class="top">${badge} <b>${esc(p.section)}</b>${destTag(p)}</div>
+      <div class="meta">proposed text for this profile section — edit before accepting if needed:</div>
+      <textarea id="prop${k}-newtext" class="profile" style="width:100%;margin-top:4px">${esc(p.new_text)}</textarea>
+      <div class="meta">current: ${p.before ? esc(p.before) : "(empty)"}</div>`;
+  }
+  const verb = p.op === "delete" ? "remove from the list" : "mark done";
+  return `<div class="top">${badge} <b>${esc(t.title)}</b>${destTag(p)}</div><div class="meta">${verb}</div>`;
+}
+
+async function acceptProp(k) {
+  const p = chatProps[k];
+  if (p.state !== "pending") return;
+  const v = f => { const el = document.getElementById(`prop${k}-${f}`); return el && el.value.trim() ? el.value.trim() : null; };
+  const op = { op: p.op, id: p.id ?? null, absorb_id: p.absorb_id ?? null,
+               title: p.title ?? null, description: p.description ?? null,
+               priority: p.priority ?? null, position: p.position ?? null,
+               section: p.section ?? null, new_text: p.new_text ?? null };
+  if (p.op === "new") Object.assign(op, { title: v("title"), owner: v("owner"), due_date_text: v("due"), description: v("desc") });
+  if (p.op === "update") (p.changes || []).forEach(c => { op[c.field] = v(c.field); });
+  if (p.op === "profile") op.new_text = v("newtext");
+  const actions = document.getElementById(`prop${k}-actions`);
+  try {
+    const res = await fetch("/api/chat/commit", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ops: [op] }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    const data = await res.json();
+    renderTasks(data.items);
+    if (data.applied.length) {
+      p.state = "applied";
+      if (p.op === "profile") loadProfile(); // re-render the updated section
+      actions.innerHTML = `<span class="status">✓ ${esc(data.applied[0])}</span>`;
+    } else {
+      p.state = "skipped";
+      const why = data.skipped.length ? data.skipped[0].reason : "not applied";
+      actions.innerHTML = `<span class="status">⚠ skipped — ${esc(why)}</span>`;
+    }
+  } catch (e) {
+    actions.insertAdjacentHTML("beforeend", `<span class="status">Error: ${esc(e.message)}</span>`);
+  }
+}
+
+function rejectProp(k) {
+  if (chatProps[k].state !== "pending") return;
+  chatProps[k].state = "rejected";
+  document.getElementById(`prop${k}-actions`).innerHTML =
+    `<span class="status">✗ rejected — nothing changed</span>`;
+  document.getElementById(`prop${k}`).style.opacity = .65;
+}
+</script>
+</body>
+</html>

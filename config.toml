@@ -1,0 +1,40 @@
+# Behavior is tuned here (non-secret settings) and in prompts/*.md.
+# The API key is NOT stored here — the Anthropic SDK reads ANTHROPIC_API_KEY
+# from the environment (see .env.example).
+
+[llm]
+provider = "anthropic"          # anthropic | local | openai (the model string can
+                                # override: claude-* → anthropic, gpt-* → openai)
+model = "claude-haiku-4-5"      # the startup model (cheap default per the build plan)
+max_tokens = 4096               # completion cap; reasoning GPT models spend part of
+                                # this budget thinking, so keep headroom
+# temperature = 1.0             # optional; omit to use the model default
+# Switch to a local OpenAI-compatible endpoint (Ollama/vLLM) with config only:
+#   provider = "local"
+#   model = "llama3.1"
+#   base_url = "http://localhost:11434/v1"
+
+# v3 M14: the global model switch. The UI selector offers these tier names; each
+# maps to a concrete model string, so swapping the lineup is a config edit only.
+[llm.tiers]
+"Haiku 4.5" = "claude-haiku-4-5"
+"Sonnet 5" = "claude-sonnet-5"
+"Opus 4.8" = "claude-opus-4-8"
+"Fable 5" = "claude-fable-5"    # Anthropic's Mythos-class tier, above Opus
+"GPT 4.1 mini" = "gpt-4.1-mini" # fast non-reasoning workhorse (needs OPENAI_API_KEY)
+"GPT 5.5" = "gpt-5.5"           # OpenAI flagship (needs OPENAI_API_KEY)
+
+[store]
+backend = "markdown"            # markdown | sqlite  (only markdown in v1)
+path = "data/todos.md"          # the living TODO list (the source of truth)
+
+[prompts]
+dir = "prompts"
+system = "system.md"
+extract = "extract.md"
+reconcile = "reconcile.md"
+chat = "assistant.md"           # the unified assistant prompt (v3 M12): conversation
+                                # + extraction mode + advisory contract
+
+[usage]
+path = "data/usage.jsonl"       # per-run token-usage log (see `meeting-notes-todos usage`)

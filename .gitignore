@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+
+# Secrets / local config
+.env
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+
+# Personal data stays local: the stores are git-friendly by design, but they
+# hold real todos, the user profile, and usage history. Remove lines here if
+# you want to track them (e.g. in a private repo).
+data/todos.md
+data/profile.md
+data/usage.jsonl
+
+# Anything named *.local.md is personal scratch material kept out of the repo.
+*.local.md
+samples/test_profile_0.md

@@ -1,0 +1,8 @@
+name: meeting-notes-todos
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13
+  - pip
+  - pip:
+      - -e .[dev]   # pulls anthropic, pydantic, python-dotenv (+ pytest) from pyproject.toml
