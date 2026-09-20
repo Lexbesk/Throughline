@@ -171,8 +171,8 @@ conversation lasts for the page session (reload = fresh chat). The system
 prompt, advisory contract, and extraction mode live in `prompts/assistant.md`.
 
 Provider support: Anthropic uses native SDK tool use; `local`/`openai` providers
-use OpenAI-compatible function calling through the same abstraction — switching
-remains config-only. For local models whose tool calling is unreliable, the
+use OpenAI-compatible function calling and Bedrock uses Converse `toolConfig`,
+all through the same abstraction — switching remains config-only. For local models whose tool calling is unreliable, the
 documented fallback is a single structured JSON response (`{"message", 
 "proposals"}`) parsed with the same repair discipline as extraction; only the
 chat module would change.
@@ -209,14 +209,25 @@ pytest
 ## Switching the LLM provider (config-only)
 
 Routing is centralized in the provider factory and the **model string picks the
-vendor**: any `claude-*` model → Anthropic, any `gpt-*` model → OpenAI. No code
-changes to switch (acceptance §10.8):
+vendor**: any `claude-*` model → Anthropic, any `gpt-*` model → OpenAI, any
+`amazon.*` / `us.amazon.*` model → Bedrock. No code changes to switch
+(acceptance §10.8):
 
 - **Anthropic** (default) — Claude via the Anthropic SDK; reads `ANTHROPIC_API_KEY`.
 - **OpenAI** — GPT models via the OpenAI SDK; reads `OPENAI_API_KEY` from `.env`
   (optional — only needed if you select a GPT model/tier). Uses native strict
   structured output (`chat.completions.parse`) and function calling; the
   pipeline's one-repair-retry stays as the safety net. Single-user/local only.
+- **Bedrock** — Amazon Nova via the Converse API (`boto3`), including native
+  tool calling and streaming. Credentials come from boto3's default chain in
+  local mode (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` in
+  `.env`, or `~/.aws`); hosted accounts store their own under "Keys". AWS needs
+  three values where every other provider has one, so they are kept as a single
+  JSON object in the same encrypted per-user slot and unpacked at use. Region
+  resolution: `[llm] region` in config, else `AWS_REGION`, else `us-east-2`. Like
+  local models, Converse has no native structured output, so the prompts ask for
+  JSON and the pipeline parses/repairs. Use an IAM user scoped to Bedrock only —
+  unlike a provider API key, AWS credentials can reach the rest of the account.
 - **`local`** — any OpenAI-compatible endpoint (Ollama, vLLM). Point `base_url` at it:
   ```toml
   [llm]
@@ -229,11 +240,13 @@ changes to switch (acceptance §10.8):
   prompts ask for JSON and the pipeline parses/repairs. Needs the endpoint
   running (e.g. `ollama serve`); the key comes from `LOCAL_API_KEY` if needed.
 
-The global model switch's `[llm.tiers]` map includes both vendors — Haiku 4.5,
+The global model switch's `[llm.tiers]` map spans all three vendors — Haiku 4.5,
 Sonnet 5, Opus 4.8, Fable 5 (Anthropic's Mythos-class tier above Opus),
-GPT 4.1 mini, and GPT 5.5 — so the header selector swaps vendors mid-session
-through the same abstraction. Tier names are display labels; each maps to a
-concrete model string in config.
+GPT 4.1 mini, GPT 5.5, Nova 2 Lite, and Nova Lite — so the header selector swaps
+vendors mid-session through the same abstraction. Tier names are display labels;
+each maps to a concrete model string in config. Note that `Nova 2 Lite` is a
+cross-region inference profile (`us.amazon.nova-2-lite-v1:0`); the bare
+`amazon.nova-2-lite-v1:0` has no on-demand throughput.
 
 ## Token usage
 

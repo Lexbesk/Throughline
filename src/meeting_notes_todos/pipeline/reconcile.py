@@ -10,6 +10,7 @@ Items with no candidate skip the LLM entirely — input stays flat as the list g
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -19,6 +20,8 @@ from ..config import PromptsConfig
 from ..models import ActionItem, Adjudication
 from ..prompts import load_prompt
 from ..providers.base import CompletionResult, LLMProvider, Usage
+
+logger = logging.getLogger(__name__)
 
 Label = Literal["NEW", "DUPLICATE", "UPDATE"]
 
@@ -120,10 +123,20 @@ def _coerce(result: CompletionResult) -> Adjudication | None:
         return result.parsed
     text = _strip_code_fences(result.text.strip())
     if not text:
+        logger.warning("adjudication response was empty; the item will be treated as NEW")
         return None
     try:
         return Adjudication.model_validate(json.loads(text))
-    except Exception:
+    except Exception as exc:
+        # An unreadable verdict degrades to NEW (below), which silently loses a
+        # duplicate — models that follow the JSON-only instruction loosely make
+        # that worth seeing. The response text itself is not logged: it is
+        # derived from the user's meeting notes.
+        logger.warning(
+            "could not parse an adjudication from %d chars of model output (%s);"
+            " the item will be treated as NEW",
+            len(text), type(exc).__name__,
+        )
         return None
 
 

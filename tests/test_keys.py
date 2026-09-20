@@ -24,7 +24,7 @@ from meeting_notes_todos.keys import (
     generate_master_key,
     get_cipher,
 )
-from meeting_notes_todos.providers import build_provider
+from meeting_notes_todos.providers import build_provider, pack_aws_credentials
 
 os.environ.setdefault(MASTER_KEY_ENV, generate_master_key())  # module-wide test key
 
@@ -74,6 +74,10 @@ def test_build_provider_uses_the_passed_key_over_env():
     assert b._client.api_key == "sk-ant-userB"  # each provider carries its own key
     o = build_provider(LLMConfig(model="gpt-4.1-mini"), api_key="sk-openai-userA")
     assert o._client.api_key == "sk-openai-userA"
+    # bedrock's stored "key" is the AWS triple as JSON; it reaches the signer
+    blob = pack_aws_credentials("AKIAUSERA", "secret-A", "us-east-2")
+    b = build_provider(LLMConfig(model="us.amazon.nova-2-lite-v1:0"), api_key=blob)
+    assert b._client._request_signer._credentials.access_key == "AKIAUSERA"
 
 
 # --- DB-backed store + web flow -----------------------------------------------
@@ -128,6 +132,33 @@ def test_store_encrypts_and_never_persists_plaintext(pool, two_users):
     assert store.get_key("anthropic") == "sk-ant-replaced-wxyz"
     assert store.delete_key("anthropic") is True
     assert store.get_key("anthropic") is None
+
+
+@pytestmark_db
+def test_aws_credentials_round_trip_through_the_single_string_slot(pool, two_users):
+    """Three AWS values go in, ciphertext is stored, the triple comes back out —
+    with the same set/get/delete path every other provider uses."""
+    from meeting_notes_todos.providers import parse_aws_credentials
+
+    store = ApiKeyStore(pool, two_users[0], get_cipher())
+    store.set_key("bedrock", pack_aws_credentials("AKIASECRET5678", "aws-secret-value", "us-east-2"))
+
+    assert parse_aws_credentials(store.get_key("bedrock")) == {
+        "access_key_id": "AKIASECRET5678",
+        "secret_access_key": "aws-secret-value",
+        "region": "us-east-2",
+    }
+    # the mask shows the access key id's tail, not the JSON's closing braces
+    assert store.list_keys()[0]["last4"] == "5678"
+
+    with pool.connection() as conn:  # neither value is persisted in the clear
+        raw = conn.execute(
+            "SELECT encrypted_key FROM user_api_keys WHERE user_id = %s", (two_users[0],)
+        ).fetchone()[0]
+    assert "aws-secret-value" not in raw and "AKIASECRET" not in raw
+
+    assert store.delete_key("bedrock") is True  # rotation/removal is unchanged
+    assert store.get_key("bedrock") is None
 
 
 @pytestmark_db
@@ -195,7 +226,7 @@ def test_key_endpoints_mask_and_never_echo_the_key(pg_mode, account):
     client = _login(username, password)
 
     assert client.get("/api/keys").json() == {
-        "providers": ["anthropic", "openai"], "keys": []
+        "providers": ["anthropic", "openai", "bedrock"], "keys": []
     }
 
     resp = client.put("/api/keys/anthropic", json={"api_key": "sk-ant-endpoint-key-6789"})
@@ -222,6 +253,48 @@ def test_keyless_user_is_prompted_not_errored(pg_mode, account):
     assert resp.status_code == 400
     detail = resp.json()["detail"]
     assert "anthropic" in detail.lower() and "key" in detail.lower()
+
+
+@pytestmark_db
+def test_bedrock_credentials_save_masked_and_gate_the_call_when_absent(account):
+    """A Bedrock tier with no stored credentials fails exactly like a missing
+    Anthropic key — same 400, same shape — and saving the three fields echoes
+    nothing back but the mask."""
+    from meeting_notes_todos.web.app import get_config
+
+    web_app.app.dependency_overrides[get_config] = lambda: Config(
+        llm=LLMConfig(model="us.amazon.nova-2-lite-v1:0"),  # the selected tier is Bedrock
+        store=StoreConfig(backend="postgres"),
+    )
+    try:
+        username, password = account()
+        client = _login(username, password)
+
+        resp = client.post("/api/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+        assert resp.status_code == 400
+        detail = resp.json()["detail"]
+        assert "bedrock" in detail.lower() and "key" in detail.lower()
+
+        # an incomplete credential is refused, not stored
+        assert client.put("/api/keys/bedrock", json={"access_key_id": "AKIA1"}).status_code == 400
+
+        resp = client.put("/api/keys/bedrock", json={
+            "access_key_id": "AKIAENDPOINT9999",
+            "secret_access_key": "endpoint-secret-value",
+            "region": "us-east-2",
+        })
+        assert resp.status_code == 200
+        assert resp.json() == {"provider": "bedrock", "last4": "9999"}
+        assert "endpoint-secret" not in resp.text  # never echoed back
+        assert "endpoint-secret" not in client.get("/api/keys").text
+
+        # with credentials stored the gate is satisfied: the masked listing shows
+        # them set (the call itself is not made — tests never touch the network)
+        listed = client.get("/api/keys").json()["keys"]
+        assert [k["provider"] for k in listed] == ["bedrock"]
+    finally:
+        web_app.app.dependency_overrides.clear()
+        web_app._current_tier = None
 
 
 @pytestmark_db

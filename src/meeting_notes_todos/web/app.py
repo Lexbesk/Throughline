@@ -50,7 +50,7 @@ from ..profile import (
     ProfileBackend,
     default_profile,
 )
-from ..providers import build_provider, resolve_provider_name
+from ..providers import build_provider, pack_aws_credentials, resolve_provider_name
 from ..providers.base import LLMProvider
 from ..review import Proposal, ReviewedItem, build_proposals, commit_reviewed
 from ..store import Store
@@ -317,7 +317,11 @@ class PasswordChangeRequest(BaseModel):
 
 
 class ApiKeyRequest(BaseModel):
-    api_key: str
+    api_key: str | None = None  # single-string providers (anthropic, openai)
+    # bedrock: AWS needs three values, packed server-side into that one string
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    region: str | None = None
 
 
 # --- routes -----------------------------------------------------------------
@@ -631,12 +635,26 @@ def api_list_keys(keys: ApiKeyStore = Depends(get_key_store)) -> dict:
     return {"providers": list(KEY_PROVIDERS), "keys": keys.list_keys()}
 
 
+def _key_material(provider: str, req: ApiKeyRequest) -> str:
+    """The single string the key store encrypts.
+
+    AWS credentials are three values where every other provider has one, so they
+    are serialized here and unpacked at use — the store stays single-string
+    (v4 M18) and its encryption/rotation/deletion path is untouched.
+    """
+    if provider == "bedrock":
+        return pack_aws_credentials(
+            req.access_key_id or "", req.secret_access_key or "", req.region or ""
+        )
+    return req.api_key or ""
+
+
 @app.put("/api/keys/{provider}")
 def api_set_key(
     provider: str, req: ApiKeyRequest, keys: ApiKeyStore = Depends(get_key_store)
 ) -> dict:
     try:
-        keys.set_key(provider, req.api_key)
+        keys.set_key(provider, _key_material(provider, req))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     # respond with the masked view only — the plaintext is never echoed back

@@ -20,6 +20,7 @@ class LLMConfig(BaseModel):
     max_tokens: int = 1024
     temperature: float | None = None
     base_url: str | None = None  # for local/openai providers (OpenAI-compatible endpoint)
+    region: str | None = None  # bedrock only; None → AWS_REGION from the env, else us-east-2
     # v3 M14: the global model switch — tier names the UI offers, mapped to concrete
     # model strings here so a changing lineup is a config edit, not code
     tiers: dict[str, str] = Field(

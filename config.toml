@@ -3,12 +3,14 @@
 # from the environment (see .env.example).
 
 [llm]
-provider = "anthropic"          # anthropic | local | openai (the model string can
-                                # override: claude-* → anthropic, gpt-* → openai)
+provider = "anthropic"          # anthropic | local | openai | bedrock (the model string
+                                # can override: claude-* → anthropic, gpt-* → openai,
+                                # amazon.*/us.amazon.* → bedrock)
 model = "claude-haiku-4-5"      # the startup model (cheap default per the build plan)
 max_tokens = 4096               # completion cap; reasoning GPT models spend part of
                                 # this budget thinking, so keep headroom
 # temperature = 1.0             # optional; omit to use the model default
+# region = "us-east-2"          # bedrock only; omitted → AWS_REGION from the env, else us-east-2
 # Switch to a local OpenAI-compatible endpoint (Ollama/vLLM) with config only:
 #   provider = "local"
 #   model = "llama3.1"
@@ -23,6 +25,10 @@ max_tokens = 4096               # completion cap; reasoning GPT models spend par
 "Fable 5" = "claude-fable-5"    # Anthropic's Mythos-class tier, above Opus
 "GPT 4.1 mini" = "gpt-4.1-mini" # fast non-reasoning workhorse (needs OPENAI_API_KEY)
 "GPT 5.5" = "gpt-5.5"           # OpenAI flagship (needs OPENAI_API_KEY)
+# Amazon Bedrock (needs AWS credentials — see .env.example, or "Keys" when hosted).
+"Nova 2 Lite" = "us.amazon.nova-2-lite-v1:0"  # cross-region inference profile: the bare id
+                                # amazon.nova-2-lite-v1:0 has no on-demand throughput
+"Nova Lite" = "amazon.nova-lite-v1:0"         # previous generation; works as a bare id
 
 [store]
 backend = "markdown"            # markdown (local files) | postgres (v4 M16:

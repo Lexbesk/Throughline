@@ -318,19 +318,42 @@ function closeKeys() { document.getElementById("keysOverlay").classList.add("hid
 async function renderKeys() {
   const data = await (await fetch("/api/keys")).json();
   const byProvider = Object.fromEntries((data.keys || []).map(k => [k.provider, k]));
-  document.getElementById("keysList").innerHTML = data.providers.map(p => {
-    const set = byProvider[p];
-    const state = set
-      ? `<span class="status">set · ····${esc(set.last4)} · updated ${esc((set.updated_at||"").slice(0,10))}</span>`
-      : `<span class="status">not set</span>`;
-    return `<div class="keyrow">
-      <div class="controls" style="margin:0"><span class="prov">${esc(p)}</span>
-        <span class="spacer"></span>${state}
-        ${set ? `<button class="link" onclick="removeKey('${esc(p)}')">remove</button>` : ""}</div>
-      <input type="password" id="key-${esc(p)}" placeholder="paste ${esc(p)} API key to ${set ? "replace" : "add"}"/>
-      <button onclick="saveKey('${esc(p)}')">${set ? "Replace" : "Save"} key</button>
-    </div>`;
-  }).join("");
+  document.getElementById("keysList").innerHTML = data.providers.map(p =>
+    p === "bedrock" ? bedrockRow(byProvider[p]) : keyRow(p, byProvider[p])
+  ).join("");
+}
+
+// the shared header: name, masked state, remove button
+function keyHeader(provider, label, set) {
+  const state = set
+    ? `<span class="status">set · ····${esc(set.last4)} · updated ${esc((set.updated_at||"").slice(0,10))}</span>`
+    : `<span class="status">not set</span>`;
+  return `<div class="controls" style="margin:0"><span class="prov">${esc(label)}</span>
+    <span class="spacer"></span>${state}
+    ${set ? `<button class="link" onclick="removeKey('${esc(provider)}')">remove</button>` : ""}</div>`;
+}
+
+function keyRow(p, set) {
+  return `<div class="keyrow">
+    ${keyHeader(p, p, set)}
+    <input type="password" id="key-${esc(p)}" placeholder="paste ${esc(p)} API key to ${set ? "replace" : "add"}"/>
+    <button onclick="saveKey('${esc(p)}')">${set ? "Replace" : "Save"} key</button>
+  </div>`;
+}
+
+// Bedrock needs three values, not one; they are stored in the same encrypted
+// slot as every other provider (packed server-side) and shown just as masked.
+function bedrockRow(set) {
+  return `<div class="keyrow">
+    ${keyHeader("bedrock", "bedrock (AWS)", set)}
+    <input type="text" id="key-bedrock-id" placeholder="AWS access key id to ${set ? "replace" : "add"}"/>
+    <input type="password" id="key-bedrock-secret" placeholder="AWS secret access key"/>
+    <input type="text" id="key-bedrock-region" placeholder="region" value="us-east-2"/>
+    <button onclick="saveBedrock()">${set ? "Replace" : "Save"} credentials</button>
+    <div class="status" style="margin-top:6px">Use an IAM user scoped to Bedrock only (for
+example just <code>bedrock:InvokeModel</code> and <code>bedrock:InvokeModelWithResponseStream</code>).
+Unlike a provider API key, AWS credentials can carry access to everything else in that account.</div>
+  </div>`;
 }
 
 async function saveKey(provider) {
@@ -346,6 +369,30 @@ async function saveKey(provider) {
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
     input.value = ""; // never keep the plaintext around in the DOM
     status.textContent = `${provider} key saved.`;
+    await renderKeys();
+  } catch (e) { status.textContent = "Error: " + e.message; }
+}
+
+async function saveBedrock() {
+  const status = document.getElementById("keysStatus");
+  const id = document.getElementById("key-bedrock-id");
+  const secret = document.getElementById("key-bedrock-secret");
+  const region = document.getElementById("key-bedrock-region");
+  if (!id.value.trim() || !secret.value.trim()) {
+    status.textContent = "Enter both the access key id and the secret access key."; return;
+  }
+  try {
+    const res = await fetch("/api/keys/bedrock", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        access_key_id: id.value.trim(),
+        secret_access_key: secret.value.trim(),
+        region: region.value.trim(),
+      }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    id.value = ""; secret.value = "";  // never keep the plaintext around in the DOM
+    status.textContent = "bedrock credentials saved.";
     await renderKeys();
   } catch (e) { status.textContent = "Error: " + e.message; }
 }

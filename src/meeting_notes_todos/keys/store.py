@@ -10,12 +10,14 @@ the provider.
 
 from __future__ import annotations
 
+import json
+
 from psycopg_pool import ConnectionPool
 
 from .crypto import KeyCipher
 
 # providers that use a stored per-user key (local endpoints use LOCAL_API_KEY/none)
-KEY_PROVIDERS = ("anthropic", "openai")
+KEY_PROVIDERS = ("anthropic", "openai", "bedrock")
 
 
 class ApiKeyStore:
@@ -38,7 +40,7 @@ class ApiKeyStore:
                 " ON CONFLICT (user_id, provider) DO UPDATE"
                 " SET encrypted_key = EXCLUDED.encrypted_key, last4 = EXCLUDED.last4,"
                 "     updated_at = now()",
-                (self.user_id, provider, encrypted, api_key[-4:]),
+                (self.user_id, provider, encrypted, _last4(provider, api_key)),
             )
 
     def get_key(self, provider: str) -> str | None:
@@ -70,3 +72,18 @@ class ApiKeyStore:
             {"provider": r[0], "last4": r[1], "updated_at": r[2].isoformat()}
             for r in rows
         ]
+
+
+def _last4(provider: str, api_key: str) -> str:
+    """The 4-char mask the UI shows for a stored key.
+
+    Bedrock keeps three AWS values in this one slot as a JSON object, so mask the
+    access key id — the raw tail would just be the JSON's closing braces. Storage,
+    encryption, rotation, and deletion are identical for every provider.
+    """
+    if provider == "bedrock":
+        try:
+            return str(json.loads(api_key).get("access_key_id", ""))[-4:]
+        except (json.JSONDecodeError, AttributeError):
+            pass
+    return api_key[-4:]
