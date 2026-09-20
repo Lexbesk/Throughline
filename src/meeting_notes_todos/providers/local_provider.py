@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .base import ChatResult, CompletionResult, LLMProvider, ToolCall, Usage
+from .base import ChatResult, CompletionResult, LLMProvider, TextDelta, ToolCall, Usage
 
 
 class LocalProvider(LLMProvider):
@@ -87,6 +87,24 @@ class LocalProvider(LLMProvider):
         role-preserving with the system prompt prepended. Tool calls exist only
         in responses, parsed below into internal ToolCall objects.
         """
+        resp = self._client.chat.completions.create(
+            **self._chat_kwargs(system_prompt, messages, tools, max_tokens)
+        )
+        message = resp.choices[0].message
+        calls: list[ToolCall] = []
+        for tc in getattr(message, "tool_calls", None) or []:
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
+            calls.append(ToolCall(id=getattr(tc, "id", "") or "", name=fn.name,
+                                  input=_parse_args(fn.arguments)))
+        return ChatResult(
+            text=message.content or "", tool_calls=calls, usage=_usage_of(resp), raw=resp
+        )
+
+    def _chat_kwargs(
+        self, system_prompt: str, messages: list[dict], tools: list[dict] | None, max_tokens
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self._model,
             self._max_tokens_param: max_tokens or self._max_tokens,
@@ -106,22 +124,57 @@ class LocalProvider(LLMProvider):
             ]
         if self._temperature is not None:
             kwargs["temperature"] = self._temperature
+        return kwargs
 
-        resp = self._client.chat.completions.create(**kwargs)
-        message = resp.choices[0].message
-        calls: list[ToolCall] = []
-        for tc in getattr(message, "tool_calls", None) or []:
-            fn = getattr(tc, "function", None)
-            if fn is None:
-                continue
-            try:
-                args = json.loads(fn.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            calls.append(ToolCall(id=getattr(tc, "id", "") or "", name=fn.name, input=args))
-        return ChatResult(
-            text=message.content or "", tool_calls=calls, usage=_usage_of(resp), raw=resp
-        )
+    def chat_stream(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+    ):
+        """Stream via OpenAI-compatible ``stream=True``. Message text streams as
+        ``delta.content`` chunks; tool calls arrive as fragments keyed by index
+        (name early, arguments in pieces) and are reassembled and delivered whole
+        at the end so proposals never render half-parsed."""
+        kwargs = self._chat_kwargs(system_prompt, messages, tools, max_tokens)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
+        text = ""
+        usage = Usage()
+        frags: dict[int, dict] = {}  # tool-call index -> {id, name, arguments}
+        for chunk in self._client.chat.completions.create(**kwargs):
+            if getattr(chunk, "usage", None):  # final usage-only chunk
+                usage = _usage_of(chunk)
+            for choice in getattr(chunk, "choices", None) or []:
+                delta = choice.delta
+                if getattr(delta, "content", None):
+                    text += delta.content
+                    yield TextDelta(delta.content)
+                for tc in getattr(delta, "tool_calls", None) or []:
+                    frag = frags.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tc, "id", None):
+                        frag["id"] = tc.id
+                    fn = getattr(tc, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            frag["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            frag["arguments"] += fn.arguments
+        calls = [
+            ToolCall(id=f["id"], name=f["name"], input=_parse_args(f["arguments"]))
+            for _, f in sorted(frags.items())
+            if f["name"]
+        ]
+        yield ChatResult(text=text, tool_calls=calls, usage=usage, raw=None)
+
+
+def _parse_args(arguments: str | None) -> dict:
+    try:
+        return json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return {}
 
 
 def _usage_of(resp: Any) -> Usage:

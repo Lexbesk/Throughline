@@ -109,6 +109,65 @@ def test_empty_notes_are_rejected(tmp_path):
 # --- management view (M6) -----------------------------------------------------
 
 
+def test_manual_add_task(tmp_path):
+    client, store = _setup(tmp_path, [])
+    try:
+        store.save([_stored_item("a", "Existing task")])
+
+        resp = client.post("/api/items", json={"title": "  Buy milk  "})
+        assert resp.status_code == 200
+        item = resp.json()["item"]
+        assert item["title"] == "Buy milk" and item["status"] == "todo"  # trimmed
+        assert item["source_meeting_id"] == "manual"
+
+        titles = [i.title for i in store.load()]
+        assert titles == ["Existing task", "Buy milk"]  # appended to the list
+        assert resp.json()["items"][-1]["title"] == "Buy milk"  # returns the full list
+
+        # optional fields: owner, priority, notes, and a resolved deadline phrase
+        resp = client.post("/api/items", json={
+            "title": "Call the dentist", "owner": "Me", "description": "the new one downtown",
+            "due_date_text": "by Friday", "priority": "high"})
+        added = resp.json()["item"]
+        assert added["owner"] == "Me" and added["priority"] == "high"
+        assert added["description"] == "the new one downtown"
+        assert added["due_date_text"] == "by Friday" and added["due_date"]  # resolved in code
+
+        assert client.post("/api/items", json={"title": "   "}).status_code == 400  # empty
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_edit_existing_task_fields(tmp_path):
+    client, store = _setup(tmp_path, [])
+    try:
+        store.save([_stored_item("a", "Vague task", owner="Lei", priority="high")])
+
+        # edit title/owner/notes and set a due phrase (resolved in code)
+        resp = client.patch("/api/items/a", json={
+            "title": "Send the Q3 deck", "owner": "Priya",
+            "due_date_text": "by Friday", "description": "for leadership"})
+        assert resp.status_code == 200
+        it = resp.json()["item"]
+        assert it["title"] == "Send the Q3 deck" and it["owner"] == "Priya"
+        assert it["description"] == "for leadership"
+        assert it["due_date_text"] == "by Friday" and it["due_date"]  # resolved
+        assert it["priority"] == "high" and it["status"] == "todo"  # untouched fields preserved
+
+        # an empty text field clears it; unsent fields are left alone
+        cleared = client.patch("/api/items/a", json={"owner": "", "due_date_text": ""}).json()["item"]
+        assert cleared["owner"] is None and cleared["due_date_text"] is None and cleared["due_date"] is None
+        assert cleared["title"] == "Send the Q3 deck"  # not sent → unchanged
+
+        # title can't be blanked
+        assert client.patch("/api/items/a", json={"title": "  "}).status_code == 400
+        # partial status/priority edits still work as before
+        assert client.patch("/api/items/a", json={"status": "doing"}).json()["item"]["status"] == "doing"
+        assert store.load()[0].title == "Send the Q3 deck"  # persisted across edits
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_mark_done_persists_and_merge_wont_resurrect(tmp_path):
     client, store = _setup(tmp_path, [])
     try:

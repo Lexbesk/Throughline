@@ -14,6 +14,7 @@ proposal* for the user to approve.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +60,19 @@ class ChatResult:
     raw: Any = None
 
 
+@dataclass
+class TextDelta:
+    """One streamed chunk of assistant message text (the streaming path).
+
+    ``chat_stream`` yields a series of ``TextDelta`` as the message generates,
+    then a final ``ChatResult`` carrying the full text, tool calls, and usage.
+    Only message *text* streams; tool calls are accumulated and delivered whole
+    at the end, so proposals never render half-formed.
+    """
+
+    text: str
+
+
 class LLMProvider(ABC):
     """Base class for provider implementations (Anthropic now; Local/OpenAI later)."""
 
@@ -98,3 +112,25 @@ class LLMProvider(ABC):
         endpoint surfaces this error as "provider does not support chat".
         """
         raise NotImplementedError("this provider does not support chat with tools")
+
+    def chat_stream(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+    ) -> Iterator[TextDelta | ChatResult]:
+        """Streaming ``chat``: yield ``TextDelta`` chunks as the message
+        generates, then a final ``ChatResult``.
+
+        The default falls back to the non-streaming ``chat`` (one delta with the
+        whole text, then the result), so any provider that implements ``chat``
+        also 'streams' — providers with a real streaming SDK override this.
+        """
+        result = self.chat(
+            system_prompt=system_prompt, messages=messages, tools=tools, max_tokens=max_tokens
+        )
+        if result.text:
+            yield TextDelta(result.text)
+        yield result

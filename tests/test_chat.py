@@ -66,7 +66,7 @@ def test_assistant_prompt_keeps_slots_and_v3_sections():
     text = (Path("prompts") / "assistant.md").read_text(encoding="utf-8")
     for slot in ("{task_list}", "{profile}", "{today}"):
         assert slot in text, f"missing slot {slot}"
-    assert "Inferred possibilities" in text  # broadened input (v3 §7.1)
+    assert "speculative" in text  # inferred/broadened input still supported (v3 §7.1)
     assert "Gap analysis" in text  # v3 §7.2
     assert "Two proposal targets" in text  # M13 routing guidance
 

@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Throughline</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
 <script>/* apply the saved theme before first paint to avoid a flash */
 document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "light";</script>
 <style>
@@ -34,7 +35,6 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
   .status { color:var(--muted); font-size:13px; }
   .cols { display:flex; gap:20px; align-items:flex-start; }
   .cols > div { flex:1; min-width:0; }
-  pre.notes { white-space:pre-wrap; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin:0; font:inherit; }
   .card { background:var(--panel); border:1px solid var(--line); border-left-width:4px; border-radius:8px; padding:12px; margin-bottom:12px; }
   .card.new { border-left-color:var(--new); }
   .card.update { border-left-color:var(--update); }
@@ -47,12 +47,17 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
   .resolved { color:var(--muted); font-size:12px; }
   .meta { font-size:12px; color:var(--muted); margin-top:8px; }
   .meta b { color:var(--update); font-weight:600; }
-  .snippet { font-size:12px; color:var(--muted); font-style:italic; margin-top:8px; }
   .spacer { flex:1; }
+  .addform { margin-bottom:18px; }  /* separate the add-a-task zone from the list below */
   ul.tasks { list-style:none; padding:0; margin:0; }
   ul.tasks li { display:flex; align-items:center; gap:10px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin-bottom:8px; }
+  ul.tasks li.editing { display:block; }  /* the inline edit form takes the whole row */
   ul.tasks .body { flex:1; min-width:0; }
   ul.tasks .m { color:var(--muted); font-size:12px; }
+  ul.tasks .m.note { font-style:italic; }
+  .editform label { display:block; font-size:12px; color:var(--muted); margin:6px 0 0; }
+  .editform label input { width:100%; margin-top:2px; padding:6px 8px; border:1px solid var(--line);
+                          border-radius:6px; background:var(--panel); color:var(--ink); font:inherit; }
   ul.tasks li.cancelled .t { text-decoration:line-through; color:var(--muted); }
   ul.tasks li.cancelled { opacity:.65; }
   ul.tasks li.done { opacity:.85; }
@@ -67,12 +72,16 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
   .msg.user { background:var(--soft); border-radius:8px; padding:8px 10px; margin-left:40px;
               max-height:130px; overflow-y:auto; }
   .msg.note { color:var(--muted); font-size:12px; }
-  .chatlog .review-block { display:flex; gap:10px; align-items:flex-start; margin:8px 0 12px; }
-  .chatlog .review-block pre.notes { flex:0 0 44%; min-width:0; font-size:12px;
-                                     max-height:420px; overflow-y:auto; }
-  .chatlog .review-block .cards-col { flex:1; min-width:0; }
-  .chatlog .review-block .card { margin:0 0 10px; }
-  .chatlog .card { margin:8px 0 10px; }
+  /* proposal cards are secondary to the conversation: compact, indented, smaller */
+  .chatlog .card { margin:6px 0 8px 40px; padding:7px 9px; font-size:12px; border-left-width:3px; }
+  .chatlog .card .top { margin-bottom:4px; }
+  .chatlog .card .badge { font-size:9px; padding:1px 6px; }
+  .chatlog .card .dest { font-size:10px; padding:0 6px; }
+  .chatlog .card label { font-size:10px; margin:3px 0 0; }
+  .chatlog .card label input, .chatlog .card textarea.profile { font-size:12px; padding:3px 6px; }
+  .chatlog .card .meta { font-size:11px; margin-top:4px; }
+  .chatlog .card .controls { margin-top:6px; gap:6px; }
+  .chatlog .card .controls button { font-size:12px; padding:4px 10px; }
   .card.delete { border-left-color:#a03030; }
   .card.merge { border-left-color:#6a4fa3; }
   .card.reprioritize { border-left-color:var(--prio-med); }
@@ -105,6 +114,9 @@ document.documentElement.dataset.theme = localStorage.getItem("mnt-theme") || "l
   ul.tasks li.deleted { opacity:.8; }
   ul.tasks li.deleted .t { color:var(--muted); }
   .msg.bot { white-space:normal; }
+  .msg.bot.streaming { white-space:pre-wrap; }  /* live plain text before markdown render */
+  .msg.bot.streaming::after { content:"▋"; color:var(--muted); animation:blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
   .msg.bot p, .msg.bot ul, .msg.bot ol, .msg.bot pre, .msg.bot blockquote { margin:0 0 8px; }
   .msg.bot > :last-child { margin-bottom:0; }
   .msg.bot ul, .msg.bot ol { padding-left:20px; }
@@ -198,6 +210,19 @@ encrypted; shown masked. Each user provides their own — get one from the provi
           <h2 style="margin:0">Task list (<span id="storeCount">0</span>)</h2>
           <span class="spacer"></span>
           <span class="status" id="listStatus"></span>
+        </div>
+        <div class="addform">
+          <div class="controls" style="margin:0">
+            <input type="text" id="newTaskInput" style="flex:1"
+                   placeholder="Add a task by hand — type and press Enter"
+                   onkeydown="if(event.key==='Enter')addTask()"/>
+            <button class="primary" onclick="addTask()">Add</button>
+          </div>
+          <div class="controls" style="margin:6px 0 0; gap:6px">
+            <input type="text" id="newOwner" style="flex:1" placeholder="owner (optional)"/>
+            <input type="text" id="newDue" style="flex:1" placeholder="due — e.g. by Friday (optional)"/>
+            <input type="text" id="newNotes" style="flex:1.3" placeholder="notes (optional)"/>
+          </div>
         </div>
         <ul class="tasks" id="taskList"></ul>
         <div id="completedSection" class="hidden">
@@ -485,13 +510,15 @@ function renderTasks(items) {
     const cancelled = it.status === "cancelled";
     const prio = ["", "high", "medium", "low"].map(p =>
       `<option value="${p}" ${(it.priority || "") === p ? "selected" : ""}>${p ? "!" + p : "priority"}</option>`).join("");
-    return `<li class="${esc(it.status)}">
+    const notes = it.description ? `<div class="m note">${esc(it.description)}</div>` : "";
+    return `<li class="${esc(it.status)}" id="task-${i}">
       <input type="checkbox" ${cancelled ? "disabled" : ""}
              onchange="setStatus(${i}, this.checked ? 'done' : 'todo')" title="mark done" />
-      <div class="body"><div class="t">${esc(it.title)}</div>${meta ? `<div class="m">${meta}</div>` : ""}</div>
+      <div class="body"><div class="t">${esc(it.title)}</div>${meta ? `<div class="m">${meta}</div>` : ""}${notes}</div>
       <select class="prio ${esc(it.priority || "")}" onchange="setPriority(${i}, this.value)" title="priority">${prio}</select>
       <button class="mv" onclick="moveItem(${i}, -1)" ${i === first ? "disabled" : ""} title="move up">↑</button>
       <button class="mv" onclick="moveItem(${i}, 1)" ${i === last ? "disabled" : ""} title="move down">↓</button>
+      <button class="link" onclick="editItem(${i})">edit</button>
       <button class="link" onclick="setStatus(${i}, '${cancelled ? "todo" : "cancelled"}')">${cancelled ? "restore" : "cancel"}</button>
       <button class="link" onclick="setStatus(${i}, 'deleted')">delete</button>
     </li>`;
@@ -539,6 +566,58 @@ async function deleteForever(i) {
 
 function setStatus(i, status) { patchItem(i, { status }); }
 function setPriority(i, value) { patchItem(i, { priority: value || null }); }
+
+async function addTask() {
+  const status = document.getElementById("listStatus");
+  const val = id => document.getElementById(id).value.trim();
+  const title = val("newTaskInput");
+  if (!title) return;
+  try {
+    const res = await fetch("/api/items", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        title,
+        owner: val("newOwner") || null,
+        due_date_text: val("newDue") || null,
+        description: val("newNotes") || null,
+      }),
+    });
+    if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
+    ["newTaskInput", "newOwner", "newDue", "newNotes"].forEach(id => document.getElementById(id).value = "");
+    renderTasks((await res.json()).items);  // new task appears at the bottom of the list
+    status.textContent = "Task added.";
+    document.getElementById("newTaskInput").focus();
+  } catch (e) {
+    status.textContent = "Error: " + e.message;
+  }
+}
+
+// edit an existing task in place: title, owner, due phrase, notes (M6 direct edit)
+function editItem(i) {
+  const it = tasks[i];
+  const li = document.getElementById(`task-${i}`);
+  if (!li) return;
+  li.classList.add("editing");
+  li.innerHTML = `<div class="editform">
+    <label>Title <input type="text" id="edit-${i}-title" value="${esc(it.title)}"/></label>
+    <label>Owner <input type="text" id="edit-${i}-owner" value="${esc(it.owner)}"/></label>
+    <label>Due <input type="text" id="edit-${i}-due" value="${esc(it.due_date_text)}"/></label>
+    <label>Notes <input type="text" id="edit-${i}-notes" value="${esc(it.description)}"/></label>
+    <div class="controls" style="margin-top:8px">
+      <button class="primary" onclick="saveEdit(${i})">Save</button>
+      <button onclick="renderTasks(tasks)">Cancel</button>
+    </div>
+  </div>`;
+  document.getElementById(`edit-${i}-title`).focus();
+}
+
+function saveEdit(i) {
+  const v = f => document.getElementById(`edit-${i}-${f}`).value.trim();
+  if (!v("title")) { document.getElementById("listStatus").textContent = "A task needs a title."; return; }
+  patchItem(i, {  // empty strings clear owner/due/notes; a changed due phrase re-resolves
+    title: v("title"), owner: v("owner"), due_date_text: v("due"), description: v("notes"),
+  });
+}
 
 async function patchItem(i, body) {
   const status = document.getElementById("listStatus");
@@ -588,16 +667,20 @@ let chatProps = [];
 
 function chatEl() { return document.getElementById("chatLog"); }
 
+function renderBot(el, text) {
+  // model output: markdown-parse then sanitize — never inserted as raw HTML.
+  // Falls back to plain text if the vendored libraries didn't load.
+  if (window.marked && window.DOMPurify) {
+    el.innerHTML = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
+  } else {
+    el.textContent = text;
+  }
+}
+
 function appendMsg(role, text) {
   const div = document.createElement("div");
   div.className = "msg " + role;
-  if (role === "bot" && window.marked && window.DOMPurify) {
-    // model output: markdown-parse then sanitize — never inserted as raw HTML.
-    // Falls back to plain text if the vendored libraries didn't load.
-    div.innerHTML = DOMPurify.sanitize(marked.parse(text, { breaks: true, gfm: true }));
-  } else {
-    div.textContent = text;
-  }
+  if (role === "bot") renderBot(div, text); else div.textContent = text;
   chatEl().appendChild(div);
   chatEl().scrollTop = chatEl().scrollHeight;
 }
@@ -608,45 +691,63 @@ async function sendChat() {
   const status = document.getElementById("chatStatus");
   const text = input.value.trim();
   if (!text || btn.disabled) return;
-  const pasteLike = text.includes("\n") || text.length > 160;
   appendMsg("user", text);
   chatHistory.push({ role: "user", content: text });
   input.value = "";
   btn.disabled = true; status.textContent = "Thinking…";
+
+  // the bubble we stream into: live plain text while streaming, re-rendered as
+  // markdown once the message completes; proposal cards appear only after.
+  const bubble = document.createElement("div");
+  bubble.className = "msg bot streaming";
+  chatEl().appendChild(bubble);
+  let acc = "", done = null, errored = null;
   try {
-    const res = await fetch("/api/chat", {
+    const res = await fetch("/api/chat/stream", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ messages: chatHistory }),
     });
     if (!res.ok) throw new Error((await res.json()).detail || res.statusText);
-    const data = await res.json();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done: streamDone } = await reader.read();
+      if (streamDone) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;  // dispatch each complete "data: {...}\n\n" SSE frame
+      while ((sep = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, sep); buf = buf.slice(sep + 2);
+        const line = frame.split("\n").find(l => l.startsWith("data:"));
+        if (!line) continue;
+        const ev = JSON.parse(line.slice(5).trim());
+        if (ev.type === "text") {
+          acc += ev.text;
+          bubble.textContent = acc;                       // token-by-token
+          chatEl().scrollTop = chatEl().scrollHeight;
+        } else if (ev.type === "done") { done = ev; }
+        else if (ev.type === "error") { errored = ev.detail; }
+      }
+    }
+    if (errored) throw new Error(errored);
+    if (!done) throw new Error("the response ended unexpectedly");
+
+    const finalMsg = done.message || acc;
+    bubble.classList.remove("streaming");
+    if (finalMsg) renderBot(bubble, finalMsg); else bubble.remove();  // proposals-only turn
     // proposals are out-of-band of the prose history, so leave a marker for the
     // next turn — otherwise the model can't tell it already staged cards
-    const stagedNote = data.proposals.length
-      ? `\n\n[Staged ${data.proposals.length} proposal card(s) — awaiting the user's accept/reject.]`
+    const stagedNote = done.proposals.length
+      ? `\n\n[Staged ${done.proposals.length} proposal card(s) — awaiting the user's accept/reject.]`
       : "";
-    chatHistory.push({ role: "assistant", content: (data.message || "") + stagedNote });
-    appendMsg("bot", data.message || "(proposals only)");
-    // miss-catching (M4/M12): pasted input renders beside its proposal cards
-    let host = null;
-    if (pasteLike && data.proposals.length) {
-      const block = document.createElement("div");
-      block.className = "review-block";
-      const src = document.createElement("pre");
-      src.className = "notes src";
-      src.textContent = text;
-      const col = document.createElement("div");
-      col.className = "cards-col";
-      block.appendChild(src);
-      block.appendChild(col);
-      chatEl().appendChild(block);
-      host = col;
-    }
-    data.proposals.forEach(p => appendProposal(p, host));
-    if (data.dropped.length)
-      appendMsg("note", `Dropped ${data.dropped.length} invalid proposal(s): ${data.dropped.join("; ")}`);
-    status.textContent = `${data.usage.input_tokens}+${data.usage.output_tokens} tokens`;
+    chatHistory.push({ role: "assistant", content: (finalMsg || "") + stagedNote });
+    // cards render only now that the turn is complete — never half-formed
+    done.proposals.forEach(appendProposal);
+    if (done.dropped.length)
+      appendMsg("note", `Dropped ${done.dropped.length} invalid proposal(s): ${done.dropped.join("; ")}`);
+    status.textContent = `${done.usage.input_tokens}+${done.usage.output_tokens} tokens`;
   } catch (e) {
+    bubble.remove();  // no half-message left hanging on a mid-stream failure
     appendMsg("note", "Error: " + e.message);
     status.textContent = "";
     if (/API key/i.test(e.message)) openKeys(); // graceful no-key nudge (v4 §7)
@@ -662,17 +763,17 @@ function reviewPlan() {
   sendChat();
 }
 
-function appendProposal(p, host) {
+function appendProposal(p) {
   const k = chatProps.push({ ...p, state: "pending" }) - 1;
   const div = document.createElement("div");
   div.className = "card " + p.op;
   div.id = `prop${k}`;
   div.innerHTML = propBody(p, k) + `
-    <div class="controls" style="margin-top:8px" id="prop${k}-actions">
+    <div class="controls" id="prop${k}-actions">
       <button class="primary" onclick="acceptProp(${k})">Accept</button>
       <button onclick="rejectProp(${k})">Reject</button>
     </div>`;
-  (host || chatEl()).appendChild(div);
+  chatEl().appendChild(div);
   chatEl().scrollTop = chatEl().scrollHeight;
 }
 
@@ -691,8 +792,7 @@ function propBody(p, k) {
       <label>Owner <input type="text" id="prop${k}-owner" value="${esc(p.owner)}"/></label>
       <label>Due <input type="text" id="prop${k}-due" value="${esc(p.due_date_text)}"/></label>
       <label>Notes <input type="text" id="prop${k}-desc" value="${esc(p.description)}"/></label>
-      ${p.priority ? `<div class="meta">priority: <b>${esc(p.priority)}</b></div>` : ""}
-      ${p.source_snippet ? `<div class="snippet">↳ ${esc(p.source_snippet)}</div>` : ""}`;
+      ${p.priority ? `<div class="meta">priority: <b>${esc(p.priority)}</b></div>` : ""}`;
   }
   if (p.op === "update") {
     const rows = (p.changes || []).map(c =>

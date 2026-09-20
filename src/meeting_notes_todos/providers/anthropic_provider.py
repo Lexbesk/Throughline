@@ -6,7 +6,7 @@ from typing import Any
 
 import anthropic
 
-from .base import ChatResult, CompletionResult, LLMProvider, ToolCall, Usage
+from .base import ChatResult, CompletionResult, LLMProvider, TextDelta, ToolCall, Usage
 
 
 def _join_text(resp: Any) -> str:
@@ -15,6 +15,14 @@ def _join_text(resp: Any) -> str:
         for block in getattr(resp, "content", None) or []
         if getattr(block, "type", None) == "text"
     )
+
+
+def _calls_of(resp: Any) -> list[ToolCall]:
+    return [
+        ToolCall(id=getattr(block, "id", "") or "", name=block.name, input=dict(block.input or {}))
+        for block in (getattr(resp, "content", None) or [])
+        if getattr(block, "type", None) == "tool_use"
+    ]
 
 
 def _usage_of(resp: Any) -> Usage:
@@ -82,15 +90,9 @@ class AnthropicProvider(LLMProvider):
         resp = self._client.messages.create(**kwargs)
         return CompletionResult(text=_join_text(resp), usage=_usage_of(resp), raw=resp)
 
-    def chat(
-        self,
-        *,
-        system_prompt: str,
-        messages: list[dict],
-        tools: list[dict] | None = None,
-        max_tokens: int | None = None,
-    ) -> ChatResult:
-        """Chat turn via native SDK tool use (v2 §4.8); tool calls are not executed."""
+    def _chat_kwargs(
+        self, system_prompt: str, messages: list[dict], tools: list[dict] | None, max_tokens
+    ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self._model,
             "max_tokens": max_tokens or self._max_tokens,
@@ -101,15 +103,42 @@ class AnthropicProvider(LLMProvider):
             kwargs["tools"] = tools
         if self._temperature is not None:
             kwargs["temperature"] = self._temperature
+        return kwargs
 
-        resp = self._client.messages.create(**kwargs)
-        calls = [
-            ToolCall(
-                id=getattr(block, "id", "") or "",
-                name=block.name,
-                input=dict(block.input or {}),
-            )
-            for block in (getattr(resp, "content", None) or [])
-            if getattr(block, "type", None) == "tool_use"
-        ]
-        return ChatResult(text=_join_text(resp), tool_calls=calls, usage=_usage_of(resp), raw=resp)
+    def chat(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+    ) -> ChatResult:
+        """Chat turn via native SDK tool use (v2 §4.8); tool calls are not executed."""
+        resp = self._client.messages.create(
+            **self._chat_kwargs(system_prompt, messages, tools, max_tokens)
+        )
+        return ChatResult(
+            text=_join_text(resp), tool_calls=_calls_of(resp), usage=_usage_of(resp), raw=resp
+        )
+
+    def chat_stream(
+        self,
+        *,
+        system_prompt: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+    ):
+        """Stream the message text via the SDK's ``messages.stream``; tool calls
+        (which never stream to the user) are read whole from the final message."""
+        kwargs = self._chat_kwargs(system_prompt, messages, tools, max_tokens)
+        with self._client.messages.stream(**kwargs) as stream:
+            for event in stream:
+                if getattr(event, "type", None) == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", None) == "text_delta" and delta.text:
+                        yield TextDelta(delta.text)
+            final = stream.get_final_message()
+        yield ChatResult(
+            text=_join_text(final), tool_calls=_calls_of(final), usage=_usage_of(final), raw=final
+        )

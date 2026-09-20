@@ -10,6 +10,7 @@ they are direct user edits, not model proposals, so no advisory gate applies.
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -17,7 +18,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -35,10 +36,11 @@ from ..auth import (
     set_password,
 )
 from ..backends import build_backends
-from ..chat import ChatOp, apply_chat_ops, run_chat_turn
+from ..chat import ChatOp, apply_chat_ops, run_chat_turn, run_chat_turn_stream
 from ..config import Config, LLMConfig, load_config
 from ..keys import KEY_PROVIDERS, ApiKeyStore, get_cipher
 from ..models import ActionItem, Priority, Status
+from ..pipeline.dates import resolve_due_date
 from ..pipeline.extract import ExtractionError, extract_action_items
 from ..pipeline.reconcile import reconcile
 from ..profile import (
@@ -101,6 +103,14 @@ async def rate_limit(request: Request, call_next):
 def healthz() -> dict:
     """Liveness probe for the platform health check (no auth, no DB)."""
     return {"status": "ok"}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> RedirectResponse:
+    """Browsers auto-request /favicon.ico; point it at the served SVG so it
+    doesn't 404. The SVG ships via package-data + the /static mount (same path
+    as index.html's other assets)."""
+    return RedirectResponse("/static/favicon.svg")
 
 
 # --- dependencies (overridable in tests) ------------------------------------
@@ -249,14 +259,30 @@ class CommitRequest(BaseModel):
 
 
 class ItemPatch(BaseModel):
-    """Partial edit; an explicit ``"priority": null`` clears the priority."""
+    """Partial edit — only fields explicitly present are applied. An empty string
+    for a text field clears it (except title, which must stay non-empty); an
+    explicit ``"priority": null`` clears the priority."""
 
     status: Status | None = None
     priority: Priority | None = None
+    title: str | None = None
+    owner: str | None = None
+    due_date_text: str | None = None
+    description: str | None = None
 
 
 class ReorderRequest(BaseModel):
     ids: list[str]  # every current item id, in the desired order
+
+
+class NewItemRequest(BaseModel):
+    """A task the user adds by hand from the list (a direct edit, no gate)."""
+
+    title: str
+    owner: str | None = None
+    due_date_text: str | None = None  # natural language; resolved in code
+    priority: Priority | None = None
+    description: str | None = None  # free-form notes
 
 
 class ChatMessageIn(BaseModel):
@@ -404,6 +430,73 @@ def api_chat(
         "dropped": turn.dropped,
         "usage": {"input_tokens": turn.usage.input_tokens, "output_tokens": turn.usage.output_tokens},
     }
+
+
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+@app.post("/api/chat/stream")
+def api_chat_stream(
+    req: ChatRequest,
+    provider: LLMProvider = Depends(get_provider),
+    store: Store = Depends(get_store),
+    profile: ProfileBackend = Depends(get_profile_backend),
+    config: Config = Depends(get_config),
+    user: User | None = Depends(get_current_user),
+) -> StreamingResponse:
+    """Same turn as /api/chat, streamed token-by-token over Server-Sent Events.
+
+    Dependencies (auth, per-user store, the user's provider key) resolve *before*
+    streaming starts, so 401 / no-key / validation are normal HTTP errors. Once
+    the stream is open, message text arrives as ``{"type":"text"}`` events; the
+    turn ends with one ``{"type":"done"}`` carrying the staged proposals (never
+    half-formed) and usage, or ``{"type":"error"}`` if the provider fails
+    mid-response — so no half-message is left hanging.
+    """
+    messages = [m.model_dump() for m in req.messages]
+    if not messages or messages[-1]["role"] != "user" or not messages[-1]["content"].strip():
+        raise HTTPException(status_code=400, detail="last message must be a non-empty user message")
+    items = store.load()  # the live list, re-injected every turn (§4.6)
+    profile_text = profile.load()
+    llm = effective_llm(config, _tier_for(user))
+
+    def event_stream():
+        try:
+            for kind, payload in run_chat_turn_stream(
+                provider=provider,
+                prompts=config.prompts,
+                items=items,
+                messages=messages,
+                profile=profile_text,
+            ):
+                if kind == "text":
+                    yield _sse({"type": "text", "text": payload})
+                elif kind == "done":
+                    turn = payload
+                    record_run(config.usage.path, command="web-chat",
+                               provider=resolve_provider_name(llm), model=llm.model,
+                               usage=turn.usage)
+                    yield _sse({
+                        "type": "done",
+                        "message": turn.message,
+                        "proposals": turn.proposals,
+                        "dropped": turn.dropped,
+                        "usage": {"input_tokens": turn.usage.input_tokens,
+                                  "output_tokens": turn.usage.output_tokens},
+                    })
+        except NotImplementedError:
+            yield _sse({"type": "error",
+                        "detail": "the configured provider does not support chat with tools"})
+        except Exception as exc:  # mid-stream provider/network failure
+            yield _sse({"type": "error",
+                        "detail": f"the model provider failed mid-response: {exc}"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/chat/commit")
@@ -610,18 +703,69 @@ def api_put_profile(
     return {"profile": profile.load() or default_profile()}
 
 
+@app.post("/api/items")
+def api_add_item(req: NewItemRequest, store: Store = Depends(get_store)) -> dict:
+    """Add a task by hand (a normal todo add) — a direct edit, appended to the
+    active list. Not a model proposal, so no advisory gate; the deadline phrase,
+    if any, is resolved to a date in code just like everywhere else."""
+    title = req.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="a task needs a title")
+    now = datetime.now(timezone.utc)
+    due_text = (req.due_date_text or "").strip() or None
+    item = ActionItem(
+        id=uuid4().hex,
+        title=title,
+        description=(req.description or "").strip() or None,
+        status="todo",
+        priority=req.priority,
+        owner=(req.owner or "").strip() or None,
+        due_date_text=due_text,
+        due_date=resolve_due_date(due_text, date.today()),
+        source_meeting_id="manual",
+        source_snippet=title,
+        created_at=now,
+        updated_at=now,
+    )
+    items = store.load()
+    items.append(item)
+    store.save(items)
+    return {
+        "item": item.model_dump(mode="json"),
+        "items": [i.model_dump(mode="json") for i in items],
+    }
+
+
 @app.patch("/api/items/{item_id}")
 def api_patch_item(item_id: str, patch: ItemPatch, store: Store = Depends(get_store)) -> dict:
+    """Edit an item in place — status/priority toggles and full field edits
+    (title, owner, due phrase, notes) all go through here. Only fields the client
+    actually sent are touched; an empty text field clears it; a changed due
+    phrase is re-resolved to a date in code."""
     items = store.load()
     target = next((item for item in items if item.id == item_id), None)
     if target is None:
         raise HTTPException(status_code=404, detail="item not found")
 
+    sent = patch.model_fields_set
     updates: dict = {}
     if patch.status is not None:
         updates["status"] = patch.status
-    if "priority" in patch.model_fields_set:  # sent at all — null means clear
+    if "priority" in sent:  # sent at all — null means clear
         updates["priority"] = patch.priority
+    if "title" in sent:
+        title = (patch.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="a task needs a title")
+        updates["title"] = title
+    if "owner" in sent:
+        updates["owner"] = (patch.owner or "").strip() or None
+    if "description" in sent:
+        updates["description"] = (patch.description or "").strip() or None
+    if "due_date_text" in sent:
+        due = (patch.due_date_text or "").strip() or None
+        updates["due_date_text"] = due
+        updates["due_date"] = resolve_due_date(due, date.today())
     if not updates:
         raise HTTPException(status_code=400, detail="nothing to change")
 
