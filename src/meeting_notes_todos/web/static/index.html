@@ -256,6 +256,8 @@ section a few tight lines.</div>
         <div class="controls" style="margin:0 0 10px">
           <h2 style="margin:0">Assistant</h2>
           <span class="spacer"></span>
+          <button onclick="briefMe()"
+                  title="Ask the assistant what to focus on right now, given the list and your profile">Brief me</button>
           <button onclick="reviewPlan()"
                   title="Ask the assistant to review your task list against the goals and focus in your profile">Review plan vs goals</button>
         </div>
@@ -536,7 +538,62 @@ async function loadStore() {
   try {
     const data = await (await fetch("/api/store")).json();
     renderTasks(data.items);
+    maybeOpeningBrief(data.items);
   } catch (e) { /* ignore on first load */ }
+}
+
+// --- the opening brief -------------------------------------------------------
+// Computed here from the list the page just loaded — no model call, so it costs
+// nothing, cannot hallucinate, and reads the same on every provider. It is shown
+// in the assistant's voice but is deliberately NOT pushed into chatHistory: that
+// array is the prose history sent to the model each turn, and seeding it with
+// text the model never wrote would both bill for it every turn and mislead it.
+
+let briefShown = false;
+
+function localISO(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-` +
+         `${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function timeGreeting() {
+  const h = new Date().getHours();
+  return h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+}
+
+const OPENERS = ["what's on your mind?", "what's going on?",
+                 "what are you thinking about?", "how's it going?"];
+
+function openingBriefText(items) {
+  const open = (items || []).filter(i => i.status === "todo" || i.status === "doing");
+  if (!open.length) {  // nothing to report — just open the conversation warmly
+    return `${timeGreeting()} — ${OPENERS[Math.floor(Math.random() * OPENERS.length)]}`;
+  }
+  const today = localISO(new Date());
+  const weekEnd = new Date(); weekEnd.setDate(weekEnd.getDate() + 7);
+  const horizon = localISO(weekEnd);
+  // ISO date strings compare correctly as strings, which sidesteps timezone drift
+  const overdue = open.filter(i => i.due_date && i.due_date < today);
+  const soon = open.filter(i => i.due_date && i.due_date >= today && i.due_date <= horizon);
+  const unowned = open.filter(i => !i.owner);
+
+  const bits = [`${open.length} open`];
+  if (overdue.length) {
+    const names = overdue.slice(0, 2).map(i => i.title).join(", ");
+    bits.push(`**${overdue.length} overdue** (${names}${overdue.length > 2 ? ", …" : ""})`);
+  }
+  if (soon.length) bits.push(`${soon.length} due this week`);
+  if (unowned.length) bits.push(`${unowned.length} without an owner`);
+  return `${timeGreeting()}. ${bits.join(" · ")}.\n\nWhere do you want to start?`;
+}
+
+function maybeOpeningBrief(items) {
+  if (briefShown) return;  // the opening line, not a live counter
+  briefShown = true;
+  const div = document.createElement("div");
+  div.className = "msg bot";
+  renderBot(div, openingBriefText(items));
+  chatEl().prepend(div);  // above the static explainer note
 }
 
 function renderTasks(items) {
@@ -799,6 +856,16 @@ async function sendChat() {
     status.textContent = "";
     if (/API key/i.test(e.message)) openKeys(); // graceful no-key nudge (v4 §7)
   } finally { btn.disabled = false; input.focus(); }
+}
+
+function briefMe() {
+  // where the model earns its tokens: a real prioritization take, on demand —
+  // not on every page load (a chat turn re-injects the whole list, ~3.5k input
+  // tokens, so an automatic greeting would spend that on every refresh)
+  const input = document.getElementById("chatInput");
+  input.value = "Brief me on where things stand: what deserves my attention right now, " +
+    "what's slipping, and what I can safely ignore today. Be brief and concrete.";
+  sendChat();
 }
 
 function reviewPlan() {
