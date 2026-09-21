@@ -59,3 +59,34 @@ jobs:
 
       - name: Run the test suite
         run: pytest -q
+
+  # Deploy only after the full suite is green, and only for pushes to main.
+  # Everything the deploy itself needs is already on Fly: fly.toml carries the
+  # app name, region and non-secret [env], and its release_command runs
+  # `meeting-notes-todos initdb` so the schema is migrated before the new
+  # version takes traffic (failing the deploy if DATABASE_URL is unreachable).
+  # The app secrets stay in `fly secrets` — only the API token comes from here.
+  deploy:
+    name: deploy
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    # One deploy at a time: a push that lands mid-deploy waits for the current
+    # one to finish rather than racing it onto the same machines. Not cancelled
+    # in flight — a half-applied release is worse than a slightly stale one.
+    concurrency:
+      group: deploy-fly
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4  # flyctl needs fly.toml and the Dockerfile
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      # --remote-only builds on Fly's builder instead of the runner's Docker,
+      # which is the only difference from running `fly deploy` locally.
+      - name: Deploy to Fly
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
