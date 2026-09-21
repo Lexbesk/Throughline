@@ -1,5 +1,7 @@
 # Meeting Notes → TODOs
 
+[![CI](https://github.com/Lexbesk/Throughline/actions/workflows/ci.yml/badge.svg)](https://github.com/Lexbesk/Throughline/actions/workflows/ci.yml)
+
 Turn unstructured meeting notes into clean, deduplicated, structured action items
 and merge them into a living TODO list. See `meeting-notes-to-todos-v1-plan.md`
 for the full build brief and `meeting-notes-to-todos-v2-plan.md` for the v2

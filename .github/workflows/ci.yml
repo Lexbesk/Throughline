@@ -1,0 +1,61 @@
+# Continuous integration: the full test suite, including the Postgres-backed
+# tests, on every push and pull request.
+#
+# The DB-backed modules (test_postgres, test_auth, test_keys) skip themselves
+# when no database is reachable, so CI must actually provide one — otherwise a
+# green run would be hiding ~40 silently skipped tests. The service container
+# below uses the same image and dev credentials as deploy/docker-compose.yml,
+# so the default dev URL in db/connection.py resolves without any local setup.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: throughline
+          POSTGRES_PASSWORD: throughline
+          POSTGRES_DB: throughline
+        ports:
+          - 5432:5432
+        # The job waits here until Postgres answers, so the module-level
+        # reachability probes in the tests never race the container's startup.
+        options: >-
+          --health-cmd "pg_isready -U throughline -d throughline"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 15
+
+    env:
+      # TEST_DATABASE_URL is what the test modules read; DATABASE_URL is what
+      # the app reads when a test exercises the real postgres dependency chain.
+      DATABASE_URL: postgresql://throughline:throughline@localhost:5432/throughline
+      TEST_DATABASE_URL: postgresql://throughline:throughline@localhost:5432/throughline
+      # Dummy Fernet key, CI only — it encrypts throwaway rows in a throwaway
+      # database that is destroyed with the runner. The real master key is a
+      # platform secret and never appears in this repo.
+      THROUGHLINE_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"  # matches the Docker image and environment.yml
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the project with test dependencies
+        run: pip install '.[dev]'
+
+      - name: Run the test suite
+        run: pytest -q
